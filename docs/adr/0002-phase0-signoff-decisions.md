@@ -22,23 +22,54 @@ prompt explicit per-document user consent to decrypt before sending to
 a cloud AI provider (see spec section 24, Privacy).
 
 ### 2. CRDT engine
-**Decision: custom C++ RGA (Replicated Growable Array), not yrs/Rust.**
+**Decision (amended 2026-09-29, see Amendment below): custom C++
+implementation of the Fugue algorithm, not yrs/Rust, not classic RGA.**
 Stays within the spec's C/C++-first mandate (section 2). Accepted
 tradeoff: this requires building and correctness-proving a CRDT from
 scratch rather than adopting a mature implementation. Mitigation:
 budget dedicated spike + fuzz/property testing time in Phase 13 for
-CRDT correctness (convergence, idempotence, commutativity) before it
-carries real user data.
+CRDT correctness — convergence, idempotence, commutativity, AND
+non-interleaving (see Amendment) — before it carries real user data.
 
 ### 3. Minimum device targets
-**Decision: include low-end/older devices**, not modern-only.
+**Decision: 2GB RAM / iOS 15+ / Android 8+.**
 This raises the bar on Phase 6 (Scanner), Phase 7 (OCR), and Phase 14
 (AI): on-device OCR/AI must degrade gracefully (smaller models, lower
 resolution processing, or cloud-offload with explicit user consent per
 the E2EE/privacy decision above) rather than assuming flagship-class
-hardware. Performance strategy (performance-strategy.md) and file/OCR
-architecture should treat low-end capability as a hard constraint, not
-an optimization pass.
+hardware. Concretely: OCR uses `tessdata_fast` (4-5MB models, not
+`best`'s 15-23MB) on this tier; local AI is capped at ~270M-parameter
+INT4 models (~125-200MB resident) which is sufficient for extraction/
+classification but NOT viable as a local summarizer — summarization on
+this device tier requires the cloud-offload+consent path. Performance
+strategy (performance-strategy.md) and file/OCR architecture treat this
+as a hard constraint, not an optimization pass.
+
+## Amendment (2026-09-29): CRDT algorithm changed from RGA to Fugue
+
+Pre-Phase-1 spike SP-6 (docs/spikes/SP-6-findings.md) found that classic
+RGA — as originally named in Decision 2 above — has a published
+backward-interleaving anomaly (Kleppmann, PaPoC 2019): concurrent
+insertions at the same position can converge to text that all replicas
+agree on, but which is corrupted relative to user intent. The
+convergence/idempotence/commutativity test plan originally specified as
+this decision's mitigation is structurally blind to this failure mode,
+since all three properties hold on the corrupted result.
+
+**Amended decision: implement Fugue (Weidner & Kleppmann, 2023)
+instead.** Fugue provides maximal non-interleaving and its correctness
+argument is largely inheritable from existing RGA-family proofs (an
+Isabelle/HOL strong-eventual-consistency proof exists for RGA; only
+Fugue's positioning optimizations are novel and need their own
+verification). Estimated cost: ~+1 engineer-week over the original RGA
+estimate, revised further upward by SP-6's broader complexity findings
+(see engineering-complexity-estimate.md: CRDT line item 6-8 -> 15-17
+engineer-weeks).
+
+Phase 13's test plan must add a fourth property beyond convergence/
+idempotence/commutativity: **non-interleaving**, verified via reference-
+model differential testing against a known-correct sequence CRDT
+implementation, not just self-consistency checks.
 
 ## Consequences
 
