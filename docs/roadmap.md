@@ -70,6 +70,21 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 
 **Entry:** Phase 0 signed off; SP-1 (revised), SP-5 and SP-6 (re-scoped) done
 **Effort:** 6–8 weeks
+**Status:** in progress — the bootstrap vertical slice is **done**; the rest of the phase is not.
+
+> **Vertical slice complete (see `changelog.md`, Unreleased).** Spec §40's post-approval task —
+> `CREATE NOTE -> STORE LOCALLY -> SEARCH NOTE -> OPEN NOTE -> EDIT NOTE -> SAVE NOTE` — is
+> implemented and tested: a root CMake build at C++17 with the ADR-0001 flag posture,
+> `core/common` (`uapp::Status`), `core/notes` (domain + `NoteStore` port + `NoteService`),
+> `storage/sqlite` (RAII SQLite/FTS5 adapter, content and index in one transaction), a
+> `uapp-notes` CLI harness, and 42 unit/integration cases green under Debug, Release and
+> ASan+UBSan at `-Werror`.
+>
+> This is the **seed only**. It deliberately does not touch the Phase 1 deliverables below:
+> there is no `libuapp_capi`, no arena allocator, no worker pool, no fuzz target, no
+> ABI-diff/layering CI, no Kotlin/Swift call path — and, per ADR-0002 decision 1, **no E2EE**,
+> which remains a v1.0 requirement and a blocking gap before any build holds real user data.
+> The slice's `note` table is a flat stand-in for the `document`+`block` schema Phase 2 owns.
 
 > **From SP-5 — these are Phase 1 ABI design rules, not later optimisations.** Retrofitting
 > them across two platform bindings is expensive, which is why SP-5 blocks this phase:
@@ -84,6 +99,10 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
   enforced redaction, structured error type
 - Worker pool and cancellation
 - GoogleTest harness, ASan/UBSan/TSan configurations, first fuzz target scaffolding
+  - *Revisit:* the bootstrap slice uses a ~120-line in-tree harness instead, because
+    GoogleTest requires exceptions and ADR-0001 disables them core-wide. Choosing the
+    permanent framework (doctest without exceptions, GoogleTest with a carve-out, or growing
+    the in-tree one) is an open Phase 1 decision needing its own ADR — see `changelog.md`.
 - ABI-diff tooling and the layering-check script
 
 **Done when**

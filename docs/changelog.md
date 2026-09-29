@@ -12,7 +12,91 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
-Nothing yet. Phase 1 (C/C++ core foundation) has not started.
+### Added — Phase 1 bootstrap: the note vertical slice (first production code)
+
+Implements exactly the slice spec §40 names as the task after architecture approval:
+
+```text
+CREATE NOTE -> STORE LOCALLY -> SEARCH NOTE -> OPEN NOTE -> EDIT NOTE -> SAVE NOTE
+```
+
+Nothing else from Phase 1 is done. This is the seed, not the phase.
+
+- **Buildable CMake project at the repo root.** C++17 per ADR-0001. Top-level
+  `CMakeLists.txt` plus `cmake/UappCompilerOptions.cmake`, which encodes the ADR's
+  restricted subset as toolchain flags — `-fno-exceptions -fno-rtti`, `-Wall -Wextra
+  -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Wold-style-cast -Werror`. Options:
+  `UAPP_BUILD_TESTS`, `UAPP_BUILD_TOOLS`, `UAPP_ENABLE_SANITIZERS`, `UAPP_WARNINGS_AS_ERRORS`.
+- **`cmake/FindSQLite3Fts5.cmake`** — locates SQLite *and compiles-and-runs a probe* proving
+  FTS5 is present, failing configuration otherwise. An FTS5-less libsqlite3 would not fail at
+  link time; it would fail on a user's device the first time anyone searched.
+- **`core/common`** (`uapp::core_common`) — `uapp::Status`, a flat append-only error enum with
+  both a stable machine-readable code (`NOTE_NOT_FOUND`) and a human-readable message, per §33.
+  Every fallible call in the core returns it and is `[[nodiscard]]`.
+- **`core/notes`** (`uapp::core_notes`) — the portable domain. `NoteId` (16-byte opaque id,
+  validating hex parse), `Note`, validation with hard size limits, the `NoteStore` persistence
+  **port**, `Clock`/`IdGenerator` ports, and `NoteService` — the public API implementing the
+  six slice steps. Links no database library at all, so PHASE0_SUMMARY.md H-3 ("nothing outside
+  `storage/sqlite` includes `sqlite3.h`") is enforced by the build graph, not by convention.
+- **`storage/sqlite`** (`uapp::storage_sqlite`) — the SQLite adapter. RAII wrappers
+  (`Connection`/`Statement`/`Transaction`, rollback-on-destruction) so no early return can leak
+  a statement or double-free one; WAL + `foreign_keys=ON` + busy timeout; bind helpers that
+  check every `size_t`→`int` narrowing before it reaches the C API; content and FTS5 index
+  written in **one transaction** per database-design.md §3.9; schema-version check that refuses
+  a database written by a newer build.
+- **`storage/sqlite/fts_query`** — converts raw user input into a safe FTS5 `MATCH` expression
+  via an allow-list (word bytes only, each term double-quoted, ANDed, last term prefix-matched).
+  Binding user text straight to `MATCH` is not SQL injection but *is* injection into FTS5's
+  query language; this is where §38's "validate external input" applies to search.
+- **`tools/notes_cli`** (`uapp-notes`) — developer harness. `demo` drives the whole slice
+  against a real on-disk database and verifies every step, exiting non-zero on the first
+  failure; `create`/`search`/`open`/`edit`/`delete`/`count` allow manual use.
+- **`tests/`** — 42 unit/integration cases plus a CLI integration test, wired into CTest as
+  `uapp.notes.unit` and `uapp.notes.cli_demo`. Coverage includes create, persist-and-reload
+  across a closed connection, FTS hit *and* miss, prefix match, edit-then-reload, index
+  freshness after edit and delete, UTF-8 round-trip, and eleven error-path cases (unknown id,
+  nil id, save-after-delete, oversized title/body/query, read-only database write rejection,
+  unopenable path, empty path, entropy-source failure, duplicate id, hostile search input).
+
+**Verification.** Debug, Release, and ASan+UBSan configurations all build with zero warnings
+under `-Werror`; `ctest` is 2/2 and the unit binary reports **42 passed, 0 failed** in each.
+
+### Test framework decision
+
+No third-party test framework. Catch2 and GoogleTest both need exceptions, which ADR-0001
+disables core-wide — adopting either would mean testing a configuration we do not ship.
+`FetchContent` would also make `cmake` require the network, a poor default for an offline-first
+product, and §35 requires a real license/redistribution review plus a `THIRD_PARTY_NOTICES`
+entry before any dependency lands. `tests/support/test_framework.h` is ~120 lines providing
+named cases, a registry, fatal/non-fatal assertions, a name filter and a pass/fail count.
+Recorded as a bootstrap decision to revisit (with an ADR) when the suite needs fixtures or
+CI-consumable output.
+
+### Known gaps — deliberately out of scope for this slice, recorded so they are not forgotten
+
+- **NOT IMPLEMENTED: end-to-end encryption.** ADR-0002 decision 1 makes E2EE a **v1.0
+  requirement**. This slice stores note titles and bodies as plaintext in an unencrypted SQLite
+  file. SQLCipher integration and the key hierarchy in `security-model.md` must land before any
+  build carries real user data.
+- **NOT IMPLEMENTED: sync, CRDT, multi-device.** Single-device only. The Fugue CRDT is Phase 13
+  and needs its own correctness-proof spike first (ADR-0002 amendment); no CRDT work was started.
+- **NOT IMPLEMENTED: the C ABI (`libuapp_capi`).** Consumers are C++ today. The `uapp_error_t`
+  cause chain from architecture.md §7 is likewise not built; `Status` carries code + message only.
+- **Deferred: vendoring SQLite.** The build links the platform libsqlite3. Reproducible mobile
+  builds need the vendored amalgamation (+ SQLCipher).
+- **Deferred: external-content FTS5 and an ICU tokenizer.** `note_fts` stores its own copy of
+  the text, and `unicode61` does not segment CJK — both are Phase 9 items already named in
+  database-design.md §3.9.
+- **Deferred: the real document/block schema.** `note` is a flat title+body table, not the
+  `document`+`block` tree of database-design.md §3.3. The 16-byte BLOB id matches the real
+  design so growing into it needs no id migration.
+- **Deferred: allocation-failure handling in C++ containers.** Factory functions use
+  `new (std::nothrow)` and check, but `std::string`/`std::vector` growth still terminates on
+  OOM under `-fno-exceptions`. ADR-0001's explicit allocation-failure contract applies at the C
+  ABI boundary, which does not exist yet.
+- **Deferred: fuzz targets.** §29 and architecture.md §5 require a `LLVMFuzzerTestOneInput`
+  entry point per parser. `build_fts5_match_expression` is the natural first target and has
+  unit tests but no fuzz harness.
 
 ---
 

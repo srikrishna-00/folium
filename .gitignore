@@ -1,0 +1,27 @@
+# Build trees
+build/
+build-*/
+cmake-build-*/
+out/
+
+# CMake / compiler artefacts
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+compile_commands.json
+Testing/
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# Local databases produced by the CLI harness
+*.db
+*.db-wal
+*.db-shm
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
