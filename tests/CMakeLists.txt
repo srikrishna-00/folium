@@ -27,3 +27,43 @@ add_test(NAME uapp.notes.cli_demo
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/run_cli_demo.cmake)
 
 set_tests_properties(uapp.notes.unit uapp.notes.cli_demo PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
+# The C ABI, exercised from C.
+#
+# A separate executable, and separate ON PURPOSE: this one is compiled by the C
+# compiler at -std=c99 under the same -Wall -Wextra -Wpedantic -Wconversion
+# -Werror posture, and it links ONLY uapp::capi. It cannot reach a core header,
+# because uapp::capi exposes none. Whatever this file cannot do, Kotlin and
+# Swift cannot do either — which makes it a contract test for the boundary
+# rather than merely another unit test.
+#
+# It also is the C99-conformance check architecture.md section 8 rule 5 asks
+# for ("a CI job compiles the capi headers standalone with a C compiler"). A
+# C++-ism landing in a public header breaks this build.
+# ---------------------------------------------------------------------------
+add_executable(uapp_capi_tests capi/note_capi_test.c)
+
+target_link_libraries(uapp_capi_tests PRIVATE uapp::capi uapp::compiler_options)
+
+# Every source here is C, so CMake would choose the C driver to link — which
+# does not pull in the C++ runtime that uapp::capi's implementation needs. Say
+# so explicitly rather than adding a stub .cpp to trick it into doing the right
+# thing. (A shared libuapp_capi would not need this; a static one does.)
+set_target_properties(uapp_capi_tests PROPERTIES LINKER_LANGUAGE CXX)
+
+# The one case needing a real file on disk — proving notes survive a
+# close/reopen — gets its path from here rather than hard-coding one, so the
+# test never writes outside the build tree.
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/capi_test_run")
+target_compile_definitions(uapp_capi_tests PRIVATE
+    UAPP_CAPI_TEST_DB_PATH="${CMAKE_CURRENT_BINARY_DIR}/capi_test_run/capi_notes.db")
+
+# Two CTest entries over one binary, split by the name filter. The split is
+# meaningful: "slice" is "the feature works through the ABI", "boundary" is
+# "the ABI does not crash when the caller is wrong". A failure in one says
+# something quite different from a failure in the other.
+add_test(NAME uapp.capi.slice    COMMAND uapp_capi_tests "slice:")
+add_test(NAME uapp.capi.boundary COMMAND uapp_capi_tests "boundary:")
+
+set_tests_properties(uapp.capi.slice uapp.capi.boundary PROPERTIES TIMEOUT 120)

@@ -61,6 +61,95 @@ Nothing else from Phase 1 is done. This is the seed, not the phase.
 **Verification.** Debug, Release, and ASan+UBSan configurations all build with zero warnings
 under `-Werror`; `ctest` is 2/2 and the unit binary reports **42 passed, 0 failed** in each.
 
+### Added — the C ABI (`libuapp_capi`): the platform-bridge boundary
+
+Infrastructure, not a feature. The note slice already worked and was tested; this gives it a
+C-callable face so the Android (JNI) and iOS (Swift/ObjC) bindings have something to attach to.
+No note behaviour changed — `core/notes` and `storage/sqlite` are untouched.
+
+Implements PHASE0_SUMMARY.md **H-2** (split the spec §4 "platform bridge" into a versioned C
+ABI plus hand-written idiomatic bindings, so a C++ ABI never crosses JNI or Swift interop) and
+the ABI rules in `api-design.md` §10 / `mobile-architecture.md` §2.
+
+- **`core/capi`** (`uapp::capi`) — two pure C99 public headers. `uapp/capi/uapp_capi.h` carries
+  the ABI version, the status enum and the string-ownership rules; `uapp/capi/uapp_notes.h`
+  carries the note surface. Opaque handles only (`uapp_note_service_t*`, `uapp_note_t*`,
+  `uapp_search_results_t*`); no C++ type, no STL container and no C++ ABI crosses the line. The
+  implementation is C++17 under the same `-fno-exceptions -fno-rtti -Werror` posture as
+  everything else. It is also the composition root that binds the abstract `NoteStore` port to
+  the SQLite adapter — a PRIVATE link, so nothing above it inherits a path to `sqlite3.h`.
+- **Versioned per spec §30.** `UAPP_ABI_VERSION_MAJOR/MINOR/STRING` plus real exported
+  accessors and `uapp_abi_is_compatible()`, so a binding can interrogate the library it
+  actually loaded rather than the header it compiled against. Structs crossing the boundary
+  carry a leading `uint32_t struct_size`; a caller with a smaller struct is rejected, one with
+  a larger struct is served. **Major is 0 deliberately** — the machinery is complete and
+  enforced, the surface is not yet frozen. The freeze and the ABI-diff CI job over the exported
+  symbol list (`api-design.md` §10 rule 5) land with the first shipped release.
+- **Every fallible function returns `uapp_status_t`**, a C mirror of `uapp::Status` whose
+  numeric values are asserted identical to the C++ enum's — code by code, at compile time — so
+  a renumbering in the core is a build failure rather than a shipped client reporting the wrong
+  error a release later. Two C-ABI-only codes in a 9xx block: `OUT_OF_MEMORY` and `UNEXPECTED`.
+  The only `void` functions are the destructors and the pure version/string lookups.
+- **Nothing unwinds across the boundary.** Every exported body is wrapped in a guard that
+  converts an escaping exception into `UAPP_STATUS_UNEXPECTED`. Under the shipping
+  `-fno-exceptions` build it compiles to nothing; it exists because the flag is per translation
+  unit, and a future engine linked in with exceptions on must not unwind through a JNI frame.
+- **String ownership is a two-rule contract, and the function names carry it.** `uapp_*_get_*`
+  borrows from the handle (freeing it is a bug; it dies with the handle). `uapp_*_copy_*`
+  transfers ownership and **must** be released with `uapp_free_string()`, never `free()` — the
+  host and the core need not share an allocator. Status and version strings are static storage.
+- **Handle hygiene.** Every destructor takes a *pointer to* the handle and NULLs it, so
+  double-release is a no-op and the ordinary use-after-close mistake degrades to
+  `INVALID_ARGUMENT` instead of a native crash. Each handle type carries a distinct magic
+  cookie, so a NULL, zeroed or **wrong-type** handle is rejected rather than dereferenced. This
+  is defence in depth, not a memory-safety claim, and the header says so.
+- **No hidden global state.** No `uapp_ctx_t` singleton, no thread-local last-error slot, no
+  process-wide registry. A service handle owns its connection, clock and id generator; any
+  number may coexist and they share nothing. Proved, not asserted — see the tests.
+- **`tests/capi/note_capi_test.c`** — **a C file**, compiled by the C compiler at `-std=c99`
+  with `-Wall -Wextra -Wpedantic -Wconversion -Werror`, including only the two public headers
+  and linking only `uapp::capi`. It is simultaneously the functional test and the
+  C99-conformance check `architecture.md` §8 rule 5 asks for: a C++-ism in a public header
+  breaks the build. 17 cases, wired into CTest as `uapp.capi.slice` and `uapp.capi.boundary`.
+  Coverage: the full slice (create/store/search/open/edit/save/delete/count), persistence
+  across close-and-reopen, UTF-8 round trip, search-limit default and clamp, **two simultaneous
+  independent services proving isolation in both directions**, and boundary safety — null
+  handles on every entry point, null strings, null out-parameters, use-after-close,
+  double-close, wrong-type handles, malformed ids, oversized input, out-of-range result
+  indices, `struct_size` versioning, and an unopenable database.
+- **Build.** The project now enables C as a first-class language (`CMAKE_C_STANDARD 99`,
+  extensions off). `cmake/UappCompilerOptions.cmake` and `core/common/CMakeLists.txt` gate the
+  C++-only flags (`-fno-exceptions`, `-fno-rtti`, `-Wold-style-cast`, …) on
+  `COMPILE_LANGUAGE:CXX`, so one options target still governs both languages and the warning
+  posture is identical for each.
+
+**Deliberate deviations from the `api-design.md` §10 sketch**, recorded so they are not mistaken
+for oversights. That sketch describes the eventual full ABI; this is the note slice only. No
+`uapp_init`/`uapp_ctx_t` — a process-wide context is exactly the hidden global state a
+multi-handle design must avoid, and nothing here needs one. No `uapp_last_error()` TLS slot —
+errors are self-describing codes with static message strings, which suffices until the
+`uapp_error_t` cause chain exists. No FlatBuffers payloads — a flat title+body note has no
+structured payload to carry; they arrive with the block tree. No job/progress/cancellation
+protocol — every operation here is a local SQLite call and none can block indefinitely, so it
+would be scaffolding around nothing.
+
+**Verification.** Built from scratch in Debug, Release, and Debug+ASan/UBSan: **zero warnings
+under `-Werror` in all three**, and `ctest` **4/4 passed** in each. The C ABI binary reports
+**17 passed, 0 failed**; the pre-existing C++ suite still reports **42 passed, 0 failed**,
+unchanged. The public headers additionally compile clean standalone under
+`-std=c99 -pedantic-errors`, `-std=c11` and `-std=c17`, and as C++11/C++17 with
+`-Wold-style-cast -fno-exceptions -fno-rtti` (the posture an ObjC++ iOS bridge would use).
+macOS `leaks` reports **0 leaks** for the C ABI test binary.
+
+Two defects were found by tooling during this work and fixed; both are recorded because neither
+is visible by inspection. **UBSan** caught that reading an out-of-range `uapp_status_t` is
+undefined behaviour — and a C caller can pass any `int` — fixed by pinning the enum with a
+`UAPP_STATUS_FORCE_INT32` sentinel, which also guarantees the type is 32 bits wide on every
+toolchain instead of implementation-defined. **`leaks`** caught that nulling an out-parameter on
+a failure path silently discards whatever handle the caller's variable was holding; the ABI now
+matches `NoteService`'s own contract — **out-parameters are never written on failure** — and a
+test asserts exactly that.
+
 ### Test framework decision
 
 No third-party test framework. Catch2 and GoogleTest both need exceptions, which ADR-0001
@@ -72,6 +161,11 @@ named cases, a registry, fatal/non-fatal assertions, a name filter and a pass/fa
 Recorded as a bootstrap decision to revisit (with an ADR) when the suite needs fixtures or
 CI-consumable output.
 
+The C ABI test carries its own ~40-line harness for a further reason: it is a **C** file, and
+`tests/support/test_framework.h` is C++. Including it would defeat the point of the file, which
+is that only the public C headers are reachable from it. The two harnesses print the same
+format on purpose, so the output of the two suites reads identically.
+
 ### Known gaps — deliberately out of scope for this slice, recorded so they are not forgotten
 
 - **NOT IMPLEMENTED: end-to-end encryption.** ADR-0002 decision 1 makes E2EE a **v1.0
@@ -80,8 +174,33 @@ CI-consumable output.
   build carries real user data.
 - **NOT IMPLEMENTED: sync, CRDT, multi-device.** Single-device only. The Fugue CRDT is Phase 13
   and needs its own correctness-proof spike first (ADR-0002 amendment); no CRDT work was started.
-- **NOT IMPLEMENTED: the C ABI (`libuapp_capi`).** Consumers are C++ today. The `uapp_error_t`
-  cause chain from architecture.md §7 is likewise not built; `Status` carries code + message only.
+- **Partially implemented: the C ABI (`libuapp_capi`).** *(Was: NOT IMPLEMENTED. Narrowed —
+  `core/capi` now exists, is tested from C, and is the supported boundary for the note slice.)*
+  What is **not** covered, precisely:
+  - **Notes only.** `uapp_note_*` is the entire surface. There is no C ABI for documents,
+    blocks, files, PDF, OCR, scanner, search-beyond-notes, sync or AI, because none of those
+    engines exist. When the `document`+`block` model lands (database-design.md §3.3), its ABI
+    is new surface, not a reshaping of this one.
+  - **NOT IMPLEMENTED: the `uapp_error_t` cause chain** from architecture.md §7. The boundary
+    carries a code plus a static, content-free message — no `domain`, no `detail`, no causes.
+  - **NOT IMPLEMENTED: the job protocol** (`uapp_job_submit`/`cancel`, progress and done
+    callbacks) and the `uapp_platform_vtable_t` from mobile-architecture.md §6. Nothing in this
+    slice is long-running or needs a platform service, so neither would have been exercised.
+  - **NOT IMPLEMENTED: FlatBuffers payloads** (`uapp_buf_t`) for structured data, per
+    api-design.md §10 rule 4. Search results cross as an opaque handle with typed accessors,
+    which is adequate for four scalar fields and would not be for a block tree.
+  - **Deferred: shared-library packaging and the ABI freeze.** `libuapp_capi` is a static
+    archive; the `.so`/`.framework` build with a closed export set (the `UAPP_CAPI_API`
+    visibility annotations are already in place for it) is not done, and neither is the
+    ABI-diff CI job over the exported symbol list required by api-design.md §10 rule 5. The
+    version is **0.1** precisely because the surface is not frozen yet.
+  - **Deferred: the bindings themselves.** No `uapp-kotlin`, no `UAPPKit`, no JNI or Swift
+    code, no Gradle or Xcode project. This run built the boundary those will attach to and
+    stopped there.
+  - **Not proven: concurrent use from multiple threads.** Distinct handles share no mutable
+    state and are designed to be independent, and the tests prove independence — but they
+    exercise it sequentially on one thread. "Safe to use two handles from two threads at once"
+    is a design property here, not a tested one.
 - **Deferred: vendoring SQLite.** The build links the platform libsqlite3. Reproducible mobile
   builds need the vendored amalgamation (+ SQLCipher).
 - **Deferred: external-content FTS5 and an ICU tokenizer.** `note_fts` stores its own copy of
@@ -90,10 +209,14 @@ CI-consumable output.
 - **Deferred: the real document/block schema.** `note` is a flat title+body table, not the
   `document`+`block` tree of database-design.md §3.3. The 16-byte BLOB id matches the real
   design so growing into it needs no id migration.
-- **Deferred: allocation-failure handling in C++ containers.** Factory functions use
-  `new (std::nothrow)` and check, but `std::string`/`std::vector` growth still terminates on
-  OOM under `-fno-exceptions`. ADR-0001's explicit allocation-failure contract applies at the C
-  ABI boundary, which does not exist yet.
+- **Deferred: allocation-failure handling in C++ containers.** *(Narrowed — the C ABI boundary
+  now exists and honours ADR-0001's contract for its own allocations: handles and owned strings
+  use `new (std::nothrow)`, check, and return `UAPP_STATUS_OUT_OF_MEMORY` having changed
+  nothing.)* What remains: `std::string`/`std::vector` growth **inside** the C++ core and
+  inside the handle structs still terminates on OOM under `-fno-exceptions`. So the boundary
+  reports allocation failure it can see and aborts on allocation failure it cannot. Making that
+  contract complete means a nothrow-aware container policy through `core/`, which is its own
+  piece of work.
 - **Deferred: fuzz targets.** §29 and architecture.md §5 require a `LLVMFuzzerTestOneInput`
   entry point per parser. `build_fts5_match_expression` is the natural first target and has
   unit tests but no fuzz harness.
