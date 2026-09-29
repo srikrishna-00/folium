@@ -173,26 +173,93 @@ network-reachability transition to online.
 **The WebSocket carries hints, never data** (`api-design.md` §7). A dropped socket degrades to
 polling. This keeps the failure mode boring.
 
-## 6. CRDT choice for rich text — **open decision**
+## 6. CRDT for rich text — **decided: custom C++, not `yrs`**
 
-Two options, and this needs sign-off (spike SP-6):
+**`adr/0002` decision 2: a custom C++ sequence CRDT. Rust does not enter the mobile build.**
 
-| | **Own RGA in C++** | **`yrs` (Y-CRDT, Rust, MIT)** |
+This closes the option that Phase 0 originally recommended (`yrs`). The rationale is spec
+§2's C/C++-first mandate, and the accepted trade is that correctness becomes ours to prove
+rather than something we inherit from a battle-tested upstream. That trade is only honest if
+the proof obligation is written down concretely, which is what §6.1–§6.3 do.
+
+Consequences of the decision, recorded so they are not rediscovered:
+
+- Rust is out of the mobile toolchain entirely. That also settles **SVG** (`resvg` is
+  unavailable → NanoSVG, `file-format-support.md` §7.5) and the **tokenizer** question
+  (AIQ-6 → approximate budgeting or a C++ tokenizer, not the Rust `tokenizers` crate).
+- Wire compatibility with the Yjs ecosystem is given up. Under E2EE (§10) a future web
+  client cannot reuse a server-side Yjs document anyway, so this costs less than it would
+  have under the original plan.
+- Risk R-15 (Rust build friction) is closed by decision and replaced by **R-29: a merge
+  defect that converges** — see §6.1.
+
+### 6.1 Algorithm: Fugue, not classic RGA — **needs confirmation**
+
+Spike SP-6 (`spikes/SP-6-findings.md`) found a specification-level defect in RGA that the
+ADR's stated mitigation cannot detect.
+
+**RGA is proved free of *forward* interleaving but exhibits *backward* interleaving**
+(Kleppmann et al., PaPoC 2019). Two users concurrently inserting at the same position, where
+one builds text right-to-left, get a result interleaved character by character. Every replica
+converges — on the same garbage. A convergence test passes. An idempotence test passes. A
+commutativity test passes. The user sees `HWeolrllod`.
+
+**Fugue** (Weidner, Kleppmann et al., 2023) defines *maximal non-interleaving* as a
+correctness property for replicated lists and achieves it by disambiguating concurrent
+inserts on **`leftOrigin` first, then `rightOrigin`** — exactly the hole RGA leaves open. It
+is comparable in implementation complexity to RGA. The same work proves that avoiding
+interleaving in *every* situation is impossible, so the target is maximal non-interleaving,
+and that limit should be stated honestly rather than marketed away.
+
+**Recommendation: amend `adr/0002` decision 2 from "RGA" to "a Fugue-family sequence CRDT".**
+Everything the ADR wanted is preserved — custom, C++, no Rust — and the change costs roughly
++1 ew. **This is a change to a signed-off ADR and needs product-owner confirmation.**
+
+### 6.2 Correctness-testing plan — four properties, not three
+
+For **any** random interleaving of operations across N simulated replicas:
+
+| # | Property | Assertion |
 |---|---|---|
-| Correctness | Ours to prove. RGA is well-understood but the implementation details (tombstone GC, concurrent-insert tie-breaking, split/merge of runs) are where bugs live. | Battle-tested in production editors; extensively fuzzed upstream. |
-| Build | No new toolchain. | Adds Rust to the Android NDK and iOS builds (`cargo-ndk`, target triples, symbol stripping, dSYM handling). |
-| Size | Small, ~3–5k lines. | ~1–2 MB static. |
-| Interop | Ours alone. | Wire-compatible with the Yjs ecosystem — relevant if the web client wants a live editor later. |
-| Effort | ~6–8 weeks including a convergence fuzzer. | ~2 weeks integration + FFI wrapper. |
-| Risk | A convergence bug is a data-corruption bug, discovered late, hard to reproduce. | Toolchain/build risk, discovered early, easy to reproduce. |
+| **P1** | **Convergence** | All replicas that have received the same set of operations hold byte-identical documents, regardless of delivery order. |
+| **P2** | **Idempotence** | Applying the same operation (or the same change-log range) twice is a no-op. Duplicate delivery is normal on a retrying mobile client, so this is a liveness requirement, not a nicety. |
+| **P3** | **Commutativity** | For concurrent operations `a`, `b`: `apply(apply(s,a),b) == apply(apply(s,b),a)`. |
+| **P4** | **Non-interleaving** ← **new** | Two replicas each insert a known contiguous token at the same position, **one of them built backward (right-to-left)**; after merge, each token appears **contiguously**. |
 
-**Recommendation: `yrs`**, on the grounds that build-system pain is cheap and recoverable
-whereas a text-merge correctness bug is expensive and reputationally damaging. This also
-front-loads the Rust decision so SVG (`resvg`) and tokenizers can reuse the toolchain.
+**P4 needs a dedicated generator.** Random operation interleaving will essentially never
+produce the shape that triggers backward interleaving, so without a generator that
+deliberately constructs it the property is untested no matter how long the fuzzer runs. This
+is the single most important line in this section.
 
-**Counter-argument to weigh:** it contradicts the spec's C/C++-first principle (§2) and adds a
-language to a codebase already spanning C++, Kotlin, Swift, TypeScript and Go. Reasonable
-people differ. **Flagged for human decision.**
+Supporting obligations, from SP-6 F-4 — these are where hand-written CRDTs actually break:
+
+- **Reference model first.** A ~200-line, O(n²), deliberately unoptimised implementation
+  written to read like the published algorithm. The production implementation (run-length
+  blocks, index caches, tombstone GC) is **differentially tested to produce byte-identical
+  documents to the reference** for every generated interleaving. This lets us inherit the
+  algorithm's published correctness argument and reduces our own obligation to "the fast one
+  equals the obvious one" — a far easier thing to establish than "the fast one is correct".
+  (An Isabelle/HOL development with a machine-checked SEC proof for RGA already exists —
+  Gomes, Kleppmann et al., OOPSLA 2017 — so the algorithm-level argument is not original
+  research. Our optimisations are.)
+- **Causal delivery.** An insert may arrive before the operation defining its origin. The
+  implementation **buffers**; it never assumes. The buffer is **bounded**, and overflow
+  escalates visibly rather than pinning memory (a hostile or buggy device otherwise has a
+  free memory-exhaustion primitive — cf. T-305).
+- **Tombstone GC.** Tombstones may be collected only when **causally stable** — acknowledged
+  by every known replica. With devices that may be offline indefinitely, causal stability may
+  never be reached. **GC therefore uses the same 90-day horizon as change-log compaction
+  (§4.3):** a device absent beyond it is excluded from the stability calculation and takes
+  the `reset_required` full-resync path. An operation referencing a collected tombstone is
+  **rejected cleanly** — never undefined behaviour — and that rejection path has its own test.
+
+### 6.3 Effort
+
+`sync-architecture.md` previously estimated own-RGA at 6–8 ew including a convergence fuzzer.
+That figure covered classic RGA and the three-property set only. With Fugue, the reference
+model and differential harness, P4, GC with causal stability, causal-delivery buffering and
+the encrypted framing in §10, the line item is **15–17 ew** (`spikes/SP-6-findings.md` F-6),
+which is why Phase 13 is re-baselined from 76 ew to ~85 ew.
 
 ## 7. Conflict resolution
 
@@ -265,18 +332,151 @@ X-Sync-Protocol: 1
 - Unknown fields in a delta are preserved on merge for the same reason.
 - A breaking change requires a migration plan with a dual-write window.
 
-## 10. Encryption in sync
+## 10. Encryption in sync — **E2EE from v1.0**
 
-- Transport: TLS 1.3, pinned.
-- Deltas at rest on the server: encrypted at the storage layer.
-- Blob bytes: encrypted client-side with per-file keys before upload
-  (`security-model.md` §5).
-- Mutations are **signed** by the device key so the server can attribute and reject
-  unregistered devices (T-305).
-- **If E2EE is adopted (PQ-2):** deltas are encrypted with the workspace key before push. The
-  server then cannot merge — which means all merging must move to the client, conflict
-  detection must be purely vector-based, and server-side search/AI become impossible. **This is
-  the single biggest fork in the sync design and it must be settled before Phase 13.**
+**`adr/0002` decision 1: end-to-end encryption from v1.0. The server never sees plaintext.**
+
+This is no longer a fork to be settled before Phase 13; it is the design. Everything in §4
+(Protocol) and §7 (Conflict resolution) is re-read in that light below.
+
+Baseline, unchanged: transport is pinned TLS 1.3; blob bytes are encrypted client-side with
+per-file keys before upload (`security-model.md` §5); every mutation is signed by the device
+key so the server can attribute and reject unregistered devices (T-305).
+
+### 10.1 How a CRDT merges on a server that cannot read it
+
+The apparent paradox — "the server merges CRDT operations but cannot see them" — dissolves
+once the server stops merging. **The server is a relay and an orderer, not a merger.** This
+is the structural change.
+
+```
+┌─ CLIENT (trusted) ─────────────────────────────────────────────────┐
+│  plaintext document ── Fugue CRDT ── op                            │
+│         op  ──► CBOR encode ──► AEAD seal under the DOCUMENT KEY   │
+│                                  XChaCha20-Poly1305-IETF           │
+│         └────────────────────────────┐                             │
+│  AAD (authenticated, NOT encrypted): │                             │
+│    doc_id ‖ snapshot_id ‖ device_id ‖ device_counter ‖ proto_ver   │
+│         └──────────► Ed25519 signature over (AAD ‖ ciphertext)     │
+└────────────────────────────────┬───────────────────────────────────┘
+                                 │  push
+┌─ SERVER (untrusted for content) ───────────────────────────────────┐
+│  SEES:     doc_id, snapshot_id, device_id, device_counter,         │
+│            signature, ciphertext length, arrival time              │
+│  DOES:     verify signature · verify device registered/unrevoked   │
+│            · authorise device→document · enforce per-device        │
+│            monotonic counter (no gaps, no rewrites)                │
+│            · assign change-log seq · append · fan out              │
+│  CANNOT:   decrypt · merge · reorder within a device · rewrite ·   │
+│            resolve a conflict · index · thumbnail · summarise      │
+└────────────────────────────────┬───────────────────────────────────┘
+                                 │  pull (opaque blobs, in seq order)
+┌─ CLIENT (trusted) ─────────────────────────────────────────────────┐
+│  verify signature ──► AEAD open ──► CBOR decode ──► CRDT.merge()   │
+│  ALL merging, ALL conflict resolution, ALL indexing happen HERE     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**Why this works at all:** a CRDT operation is commutative and idempotent *by construction*.
+Merging therefore needs no knowledge of content — only that every replica eventually receives
+every operation. Delivery is a transport property, and transport does not require plaintext.
+The server's whole job reduces to *durable, ordered, authenticated, exactly-once-ish
+delivery of opaque bytes*, which is a much smaller and much more boring job than merging.
+
+This is the same shape as the published `secsync` architecture (encrypted snapshots +
+encrypted updates, ordered by unencrypted authenticated metadata), which is useful
+corroboration that the design is not novel.
+
+### 10.2 What must stay in cleartext, and why that is a real cost
+
+Everything in the AAD is **authenticated but not confidential**. It cannot be encrypted,
+because the server's ordering and authorisation duties depend on it:
+
+| Cleartext | Why the server needs it |
+|---|---|
+| `doc_id` | routing, fan-out, access control |
+| `snapshot_id` | which snapshot an update is rooted at, so stale updates can be dropped |
+| `device_id` + public key | signature verification, revocation |
+| `device_counter` | gap detection; per-device ordering; replay rejection |
+| ciphertext length, timing | unavoidable side channels |
+
+It follows — and must be said plainly in the privacy policy rather than buried — that the
+server learns **who edits which documents, when, how often, and roughly how much**. E2EE
+protects content, not the social graph of editing. This is already recorded as accepted risk
+6 in `security-model.md` §14; it is now a shipped property, not a hypothetical.
+
+**Binding is not optional.** The AAD must be bound into the AEAD, so the server cannot
+re-attribute an operation to a different document, device or snapshot without the client
+detecting it. Signing the ciphertext alone would leave that attack open.
+
+### 10.3 Snapshots — required, not an optimisation
+
+A document with thousands of updates would require a fresh client to download and decrypt
+every one of them before rendering a single character. That is a startup-budget failure
+(`performance-strategy.md` §2.1: 1.5 s p50 to interactive).
+
+So: a client periodically seals the **whole CRDT state** under the document key as a
+**snapshot**, pushes it, and the server may then discard the updates it supersedes. The
+server can do this safely without reading anything, because it enforces the rule
+structurally: *a snapshot is persisted only if it references the previous snapshot plus all
+of that snapshot's updates; an update is persisted only if the same device's previous update
+for that snapshot is already persisted.*
+
+Snapshot cadence is a client policy (e.g. every N updates or M bytes), and it doubles as the
+**key-rotation boundary** — rotating the document key means writing a new snapshot under the
+new key, after which the old snapshot and its updates can be dropped
+(`security-model.md` §5.3).
+
+### 10.4 What the server loses, enumerated
+
+Recorded here because every one of these has been assumed somewhere in the Phase 0 docs and
+each is now an explicit client-side obligation:
+
+| Capability | Under E2EE |
+|---|---|
+| Server-side merge / conflict resolution | **Gone.** §4.2 step 4 collapses — see §10.5. |
+| Server-side search index | **Gone.** FTS5 is device-local only. |
+| Server-side RAG indexing / embeddings | **Gone.** See `ai-architecture.md` §13. |
+| Server-side thumbnailing | **Gone.** Thumbnails are generated on-device and sync as encrypted blobs. |
+| Server-side conversion (incl. the LibreOffice path, H-16) | **Gone by default** — available only through the explicit per-document decrypt-and-send consent flow (`ai-architecture.md` §13.2). This makes S-7 (legacy DOC/XLS/PPT at v1.0) materially *less* attractive than it already was. |
+| Web client with server-side rendering | **Gone.** A web client must hold keys and do the work in the browser, or not exist at v1.0. |
+| Server-side "repair a corrupt document" support tooling | **Gone.** Support cannot look at user data. This is a support-process consequence, not just an engineering one. |
+
+### 10.5 Protocol changes that follow
+
+Amendments to §4, to be applied when Phase 13 is specified in detail:
+
+1. **§4.2 step 4 (server-side merge) is deleted.** The server compares nothing. Its per-
+   mutation outcomes reduce to `accepted` / `rejected(reason)` — where reasons are
+   signature, authorisation, counter gap, unknown snapshot, or size. There is no
+   `conflict` status from the server, because the server cannot detect one.
+2. **Conflict detection is purely client-side and purely vector-based.** §3.1's version-vector
+   dominance test is unchanged in substance — it never needed plaintext — but it now runs
+   only on the client. The `sync_conflict` rows of §7.2 are local rows.
+3. **`delta` in the §4.2 push body becomes an opaque base64/CBOR ciphertext**, with
+   `version_vector` and `lamport` **moved into the sealed plaintext**, not sent alongside it.
+   Leaving a version vector in cleartext would leak the per-device edit graph for no benefit,
+   since only clients evaluate it.
+4. **§9's "preserve what you don't understand" rule gets easier, not harder.** The server
+   already cannot understand anything, so forwarding unknown mutation kinds is automatic.
+   The *client* must still preserve unknown fields on merge.
+5. **The `X-Sync-Protocol` version stays cleartext**, so a server can reject a protocol it
+   cannot order correctly.
+
+### 10.6 Testing additions (extends §12)
+
+- **The server never holds plaintext — as a test, not an assertion.** An integration test
+  runs a full sync round-trip against a real server instance and asserts that no known
+  plaintext token appears anywhere in the server database, object store, logs or metrics.
+  This test fails the build. It is the E2EE equivalent of the LOCAL_ONLY egress test in
+  Phase 14 and carries the same weight.
+- **Tamper tests:** flip a byte of ciphertext, swap an operation's `doc_id`, replay an
+  operation under a different `snapshot_id`, reuse a `device_counter`. Every case must be
+  rejected by the client, and where the server can detect it, by the server too.
+- **Key-rotation convergence:** replicas that rotate the document key mid-session, with one
+  replica offline across the rotation, must still converge (`security-model.md` §5.3).
+- **Snapshot/update pruning safety:** a client that pulls after the server has pruned
+  superseded updates must reconstruct an identical document.
 
 ## 11. Failure modes and their handling
 
@@ -303,7 +503,11 @@ disproportionate on purpose.
    reproducible — a failure can be replayed exactly.
 2. **Property tests.** For any random operation interleaving: (a) all devices converge to an
    identical state; (b) no user-intended value is unreachable from history; (c) applying the
-   same change log twice is a no-op (idempotence).
+   same change log twice is a no-op (idempotence); (d) **concurrent insertions do not
+   interleave** (§6.2 P4 — needs its own generator, since random interleaving will not
+   produce the triggering shape).
+   Plus the differential check of §6.2: the optimised sequence CRDT must produce byte-identical
+   documents to the naive reference model.
 3. **Partition tests.** Split-brain for 1 h of simulated operations, then heal.
 4. **Fuzzed deltas.** Malformed and adversarial deltas from a "hostile device".
 5. **Long soak.** 5 real devices, 7 days, scripted concurrent edits — a v1.0 release gate.

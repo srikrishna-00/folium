@@ -339,6 +339,18 @@ confirmed and recorded in `THIRD_PARTY_NOTICES`:
 licence in the pinned PDFium tree, checked into the repo, and that inventory becomes the basis
 of the PDF section of `THIRD_PARTY_NOTICES`.
 
+**SP-1 outcome (`spikes/SP-1-findings.md`):** PDFium is built **from pinned source with
+upstream's own GN/depot_tools toolchain, in a hermetic container, in our CI**, and consumed
+from our CMake as an `IMPORTED` target — *not* via a hand-written CMake port and *not* from a
+third-party binary vendor. This matters for this section specifically: the abandoned CMake
+port substitutes system packages for PDFium's vendored tree, which would make the inventory
+above describe a build we do not ship. **GN gives a more accurate licence inventory than a
+CMake port would**, because `DEPS` at a pinned commit plus `gn desc` describes exactly the
+code compiled. Confirmed build args: `pdf_enable_v8=false`, `pdf_enable_xfa=false`,
+`pdf_use_partition_alloc=false`, `is_component_build=false`, `pdf_is_complete_lib=true`,
+`use_custom_libcxx=false`; `pdf_use_skia` left unset, i.e. **AGG is the shipped rasteriser** —
+so the AGG 2.3 licence row above is load-bearing and must be verified, not skipped.
+
 ## 7.9 Attribution obligations
 
 Even permissive licences impose obligations. The following require reproducing the copyright
@@ -371,6 +383,53 @@ No dependency is added without all of:
 
 CI fails the build if a `third_party/` directory lacks a `LICENSE` or a
 `THIRD_PARTY_NOTICES` entry (NFR-8).
+
+## 11. Low-end device constraints on format support (`adr/0002` decision 3)
+
+`adr/0002` decision 3 makes **Tier D** (2–3 GB RAM, entry SoC, eMMC — see
+`performance-strategy.md` §1.1) a hard constraint. Format *support* does not change by tier —
+a format we claim is supported is supported everywhere we ship — but **what the engine does
+inside that support does change**, and per J-9 the limitations column is where that belongs.
+
+**Principle: the matrix stays tier-independent; the limitations are tier-annotated.** We do
+not publish a second matrix. A capability that cannot be delivered on Tier D at all is either
+removed from the matrix entirely or marked ◐ with the constraint named — never left as ✔ with
+a footnote nobody reads.
+
+### 11.1 Engine-level constraints on Tier D
+
+| Engine | Constraint |
+|---|---|
+| **PDF (PDFium + QPDF)** | Render scale capped at 1×; 2-page decoded bitmap LRU; ≤ 16 MB tile cache; `RGB_565` for thumbnails. Documents > 200 pages / > 50 MB open read-only-fast, with whole-document-model editing disabled and a reason shown. |
+| **OCR (Tesseract + platform)** | **Ship `tessdata_fast` (≈ 4–5 MB full set; ~2 MB for `eng`), never `tessdata_best` (≈ 15–23 MB).** Serial page processing only; 200 DPI rather than 300 DPI; relaxed per-page budget (`performance-strategy.md` §1.2). ML Kit **unbundled** (≈ 260 KB/script) rather than bundled (≈ 4 MB/script) where Play Services is present — which makes S-15/MQ-4 a device-footprint question, not only a market-coverage one. |
+| **Conversion** | 96 MB arena rather than 256 MB. **A conversion that does not fit fails with a specific, actionable error — never an OOM kill.** This is the difference between "this file is too large for this device" and the app disappearing. |
+| **Scanner (OpenCV)** | Capture resolution capped (~8 MP) so the perspective-correction working set fits the arena. |
+| **Images** | Decompression-bomb caps (T-102) unchanged in *ratio* but with a lower absolute output cap on Tier D. Large TIFF/PNG decode is streamed page-by-page, never whole-image where the format allows otherwise. |
+| **Archives** | Browse-without-extract (already the design) matters more here, not less. Extraction is streamed with a lower absolute cap. |
+
+### 11.2 Formats whose viability changes on Tier D
+
+| Format | Note |
+|---|---|
+| Very large multi-page TIFF | Page-at-a-time only; no whole-document preview grid |
+| 100 MB+ PDFs | Supported for view/search; page-reordering and merge operations that rewrite the whole file may exceed the arena and fail explicitly |
+| XLSX with 1M-row sheets | Streamed read stands; the 100 ms database-view budget does not apply on Tier D and the row window is smaller |
+| DOCX → PDF via the layout engine | The layout engine holds a page model, not the document; unchanged in principle, but the fidelity-report buffer needs the same arena cap |
+
+### 11.3 Interaction with E2EE
+
+`adr/0002` decision 1 removes the server-side conversion escape hatch. **H-16 (no LibreOffice
+in the client; server-side only) means legacy DOC/XLS/PPT now requires the explicit
+per-document decrypt-and-send consent flow** (`ai-architecture.md` §13.2) rather than being a
+transparent ☁ capability. Combined with Tier D's constraints this makes **S-7 ("is legacy
+DOC/XLS/PPT required at v1.0?") materially less attractive than it already was**, and the
+existing recommendation — *no* — is strengthened rather than changed.
+
+The same applies to every ☁ cell in the matrix: under E2EE, ☁ no longer means "we do it on
+the server for you" but "we ask you, per document, whether to decrypt and send it". The
+symbol's meaning has changed and §1's legend must be updated when Phase 8 is specified.
+
+---
 
 ## 8. Sources
 

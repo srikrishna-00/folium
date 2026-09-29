@@ -22,6 +22,10 @@ Implements spec §17 (provider abstraction), §18 (RAG), §19 (features), §20 (
 5. **Degrade loudly.** If the requested capability is unavailable, fail with a specific code.
    Never silently substitute a weaker model or a cloud provider for a local one.
 6. **Everything is a job.** Generation is slow and cancellable.
+7. **The server never sees plaintext.** `adr/0002` decision 1 makes E2EE a v1.0 property, so
+   no AI or RAG stage may be designed server-side. Indexing, embedding, retrieval and citation
+   verification are all on-device; plaintext crosses the network only through the explicit
+   per-document consent flow. **See §13 — it qualifies §7 (RAG) throughout.**
 
 ## 2. Layering
 
@@ -435,6 +439,149 @@ Evals run nightly and on any prompt/model/retrieval change.
 | AIQ-1 | Which cloud providers ship at v1.0? (= PQ-3) Each needs a DPA with zero-retention terms. |
 | AIQ-2 | Do we ship a generative local model at v1.0, or local-embeddings-only? Depends on SP-4. |
 | AIQ-3 | Who pays for cloud AI — bundled credits, BYO API key, or both? BYO key changes the key-storage and abuse model substantially. |
-| AIQ-4 | Is server-side RAG (for the web client) in v1.0? It requires server-side chunks + vectors, which conflicts with E2EE (PQ-2). |
-| AIQ-5 | Which specific embedding model? It is a one-way door — changing it forces a full re-embed of every user's corpus. |
-| AIQ-6 | Tokenizer dependency: accept a Rust dep (`tokenizers`) for accurate budgeting, or accept approximate budgeting? |
+| AIQ-4 | ~~Is server-side RAG in v1.0?~~ **Answered by `adr/0002` decision 1: no. RAG is client-side/local-first. See §13.** The residual question is narrower: does a web client exist at v1.0 at all, given it would have to hold keys and index in-browser? |
+| AIQ-5 | Which specific embedding model? It is a one-way door — changing it forces a full re-embed of every user's corpus. **Under §13.4 this is now also a per-device-tier question**: the floor device may not run the same model as Tier A. |
+| AIQ-6 | ~~Tokenizer dependency: accept a Rust dep (`tokenizers`)?~~ **Foreclosed by `adr/0002` decision 2** — Rust is out of the mobile build. Remaining choice: a C++ tokenizer, or approximate budgeting with a safety margin. |
+| AIQ-7 | **New.** What is the exact consent-record retention and revocation semantic (§13.2)? Revoking consent cannot un-send data already sent; the UI must not imply that it can. |
+| AIQ-8 | **New.** Is cloud-offload-with-consent offered for OCR on the low-RAM tier (§13.5), or does OCR stay strictly on-device there even when it is slow? This is a product call about which promise dominates. |
+
+---
+
+## 13. AI and RAG under end-to-end encryption (`adr/0002` decision 1)
+
+**The server never sees plaintext. No AI feature may be designed as if it does.**
+
+This section supersedes any implication elsewhere in this document that indexing, embedding
+or retrieval could be done server-side.
+
+### 13.1 The one-line rule
+
+> **Plaintext leaves the device only when the user has, for this specific scope, in this
+> session, explicitly said so — and it is encrypted before it crosses any other boundary.**
+
+Three separate boundaries follow, and conflating them is the mistake this section exists to
+prevent:
+
+| Boundary | What crosses | Encryption |
+|---|---|---|
+| Device → our server (sync, blobs) | ciphertext only | **Always.** Document key, client-side. The server has no key. |
+| Device → our AI gateway | plaintext, only under consent | TLS only — the gateway must read it to call the provider. **This is the E2EE exception, and it is user-initiated, per-scope, and audited.** |
+| Our gateway → third-party provider | plaintext | TLS + a zero-retention DPA (T-403) |
+
+**There is no path where our server decrypts stored content.** It cannot: it has no key. A
+cloud AI call is not "the server decrypting your document"; it is "the client decrypting a
+document it already holds and sending that plaintext, once, with your permission, through a
+gateway that does not store it."
+
+### 13.2 The per-document consent flow
+
+Required before any plaintext crosses boundary 2. This extends §4's policy gate rather than
+replacing it — the gate's steps 1–7 still all run.
+
+```
+ 1. User invokes a cloud-requiring AI action on scope S
+       (S = a document, a selection, or an explicitly named set)
+ 2. Client resolves S → the exact byte ranges that would be sent
+       Not "the document". The ranges. The user is shown what leaves.
+ 3. Policy gate evaluates workspace.ai_policy (§4)
+       LOCAL_ONLY → AI_POLICY_BLOCKED. There is no consent prompt.
+                    A LOCAL_ONLY workspace cannot be talked into cloud
+                    egress by a dialog. Fails closed, always.
+ 4. Local content classification (§4 step 3) over the resolved ranges
+       credentials / ID numbers / payment data detected
+         → the prompt names what was found, specifically
+ 5. CONSENT PROMPT — states, without euphemism:
+       · which provider (named, not "our AI partner")
+       · what leaves (a preview of the resolved ranges, expandable)
+       · approximate size and token count
+       · that it leaves ENCRYPTED STORAGE to do so
+       · the provider's retention terms (data_policy_url)
+       · scope of the grant and when it expires
+ 6. On approval: write consent_record BEFORE decrypting
+       { id, at, actor, scope_ref, byte_range_hash, provider,
+         model, expires_at, policy_snapshot }
+       Hash-chained into audit_log (security-model.md §10).
+ 7. Decrypt the resolved ranges into a scratch buffer that is:
+       · arena-allocated, never written to disk
+       · zeroed on completion AND on the crash-recovery sweep (T-206)
+ 8. Emit the ai.egress audit record (§4 step 6), mint the policy token, dispatch
+ 9. Response returns; scratch buffer zeroed; consent grant remains
+    valid for its declared scope and TTL, then expires
+```
+
+**Grant granularity.** Default is **per document, per provider, for this session**. A
+workspace-wide standing grant is available but is a deliberate, separately-confirmed
+setting, not a "remember my choice" checkbox on the prompt — because the whole value of the
+prompt is that the user sees each escalation.
+
+**Revocation is honest.** Revoking a grant stops *future* egress. It cannot recall data
+already sent. The UI must say that. A revoke button that implies deletion at the provider is
+a lie the product cannot back up (T-403: the guarantee is contractual, not technical).
+
+**Agents inherit this unchanged.** An agent run (§9) requiring cloud AI over a document the
+user has not consented for **blocks on the same prompt**, mid-run. There is no batching of
+consent across an agent's steps, and no "approve all" — that would reintroduce exactly the
+silent-egress failure T-401 exists to prevent.
+
+### 13.3 RAG becomes client-side and local-first. It was already most of the way there.
+
+The good news: `adr/0002` decision 1 changes **less of §7 than expected**, because the
+pipeline was already designed local-first (H-23: embeddings are device-local and never
+synced). What changes is that the local path is now the *only* path, and the fallbacks that
+quietly assumed a server are removed.
+
+| §7 stage | Under E2EE |
+|---|---|
+| 1. EXTRACT | **On-device, unchanged.** Parsers already run locally. |
+| 2. CHUNK | **On-device, unchanged.** |
+| 3. EMBED | **On-device only.** Batch cloud embedding of a corpus is dead: it would require bulk-decrypting an entire workspace and shipping it out, which no per-document consent flow can honestly cover. *Cloud embedding of a single consented query string remains possible.* |
+| 4. STORE | **On-device only.** `chunk`, `chunk_vec` and `embedding_meta` live in the SQLCipher database and are **never synced** (H-23 — now load-bearing rather than merely tidy). |
+| 5. RETRIEVE | **On-device only.** FTS5 + `sqlite-vec` + RRF, all local. |
+| 6. ASSEMBLE | **On-device.** |
+| 7. GENERATE | Local model, **or** cloud under §13.2 consent — this is the only stage where plaintext may leave. |
+| 8. VERIFY CITATIONS | **On-device**, against the local chunk store. Unchanged, and now unambiguously so: verification cannot be delegated to a server that cannot read the chunks. |
+
+**Consequences that must be planned for, not discovered:**
+
+- **A new device starts with an empty index.** Chunks and vectors do not sync, so a
+  freshly-signed-in device must re-extract and re-embed its whole corpus locally. For a large
+  workspace this is hours of background work. It needs to be a **visible, resumable,
+  checkpointed, thermally-aware job** with honest progress — not a spinner. Search results are
+  incomplete until it finishes, and the UI must say so rather than silently under-returning.
+- **Re-indexing cost is paid per device, N times**, not once on a server. On the low-RAM
+  tier (§13.5) this is the single heaviest background workload the app has.
+- **T-406 (embedding inversion) improves.** There are no server-side vectors to invert. The
+  residual is device-local only, and the mitigation is the database encryption we already have.
+- **Multi-device search consistency is now eventual in a second, subtler way**: two devices
+  can disagree about search results purely because one has finished indexing and the other
+  has not, with no sync divergence at all. Diagnostics must be able to explain that.
+
+### 13.4 Model choice becomes a device-tier decision
+
+Because embedding now happens on every device rather than once on a server, the embedding
+model must run on the **floor** device, not the median one. See
+`performance-strategy.md` §1.1 and §2.7 for the budgets.
+
+The one-way-door problem (AIQ-5) gets worse: if Tier A and the low-RAM tier ran *different*
+embedding models, their vectors would be in different spaces and a user's two devices would
+return different results for the same query. **Therefore: one embedding model across all
+tiers, chosen to fit the floor device.** Tier A does not get a better one. This is a real
+quality ceiling and should be recorded as such rather than left as an implementation detail.
+
+### 13.5 Cloud-offload with consent as the degradation path
+
+`adr/0002` decision 3 puts low-end devices in scope. Where an on-device AI or OCR path is
+infeasible there, the honest options are exactly three, and "silently do it on the server"
+is not among them:
+
+1. **Do it locally but slowly**, with visible progress and cancellation (preferred default).
+2. **Disable the feature and say why**, naming the constraint
+   (`performance-strategy.md` §1: features are disabled with an explanation, never silently slow).
+3. **Offer cloud-offload through the §13.2 consent flow** — same prompt, same audit record,
+   same LOCAL_ONLY fail-closed behaviour. No separate, weaker consent path exists for
+   "it's only OCR". OCR text is A4-class content (`security-model.md` §1) and is treated as
+   equal in sensitivity to the source document.
+
+**H-29 is unaffected and non-negotiable: LOCAL_ONLY still fails closed.** A device being
+slow is not a reason to weaken a policy the user set. `AI_NO_LOCAL_MODEL` remains the
+answer, with an offer to download a smaller model where one fits.

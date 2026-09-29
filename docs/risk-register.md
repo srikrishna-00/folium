@@ -70,24 +70,37 @@ posture, including whether to move that format server-side.
 
 ---
 
-### R-03 — Without E2EE, a server breach exposes user content
+### R-03 — ~~Without E2EE, a server breach exposes user content~~ → **Key loss makes user data unrecoverable**
 | | |
 |---|---|
-| **Category** | Security / Product |
-| **P × I** | M × 5 = **10** |
+| **Category** | Security / Product / Support |
+| **P × I** | ~~M × 5 = 10~~ → **M × 4 = 8** (re-scored) |
 | **Owner** | CTO / Security lead |
 
-The product will hold contracts, IDs, medical and financial documents. Without end-to-end
-encryption, the server can decrypt everything, so a breach is a content breach.
+**Resolved as originally written.** `adr/0002` decision 1 ships E2EE at v1.0: the server holds
+no key, so a breach yields ciphertext plus metadata (`security-model.md` §5A). PQ-2 is answered
+and the work has moved out of Phase 18 into Phases 2/12/13.
+
+**The risk does not disappear; it inverts.** E2EE trades "a breach exposes content" for "nobody,
+including us, can recover a lost key". A single-device user who loses the device and has neither
+the recovery phrase nor a platform-keychain copy has **permanently lost their data, and support
+cannot help.** At scale, users lose recovery phrases.
 
 **Mitigation**
-- **Answer PQ-2 before Phase 12.** If E2EE is a v1.0 promise, it must be designed into the
-  backend and sync from the start, not retrofitted in Phase 18.
-- If not E2EE: per-file encryption at rest, strict key separation, least-privilege service
-  access, tenant isolation with RLS, and **honest public documentation of what we can see**.
+- Recovery phrase generated client-side with **mandatory re-entry verification**, no deferral
+  (open question N-7 in `spikes/SPIKE_SUMMARY.md`).
+- Opt-in platform-keychain convenience copy, clearly labelled, never the only copy.
+- **Push users toward a second enrolled device** and warn persistently while only one exists —
+  multiple devices are the practical recovery mechanism, not the phrase.
+- Say it before it happens: onboarding, settings, privacy policy.
+- Support runbooks written on the basis that there is no back door — **a launch blocker**.
+- PIN + enclave escrow (Signal-SVR-class) evaluated for v1.1; **the record shape must exist in
+  the v1.0 data model** or it becomes a migration across every user's keys (N-4).
 
-**Trigger:** PQ-2 unanswered at the Phase 11 boundary ⇒ escalate; it becomes a schedule risk as
-well as a security one.
+**Residual: accepted.** This is the direct price of E2EE (`security-model.md` §14, item 8).
+
+**Trigger:** any proposal to add a server-side key-recovery path ⇒ that is not E2EE; escalate to
+the CTO before it ships.
 
 ---
 
@@ -109,8 +122,12 @@ feature work.
 - Property tests for convergence, no-loss and idempotence over 10⁶ operations.
 - Every LWW loser written to version history before being overwritten — tested, not asserted.
 - 7-day / 5-device soak as a release gate.
-- Adopt `yrs` rather than writing our own text CRDT (SP-6) to move correctness risk onto
-  battle-tested code.
+- ~~Adopt `yrs` rather than writing our own text CRDT (SP-6).~~ **Overturned by `adr/0002`
+  decision 2: we write our own.** Correctness risk stays with us — see **R-29**, and note that
+  the four bullets above are *not sufficient* for a sequence CRDT (SP-6 F-1).
+- **Add the fourth property: non-interleaving**, with its own backward-insertion generator
+  (`sync-architecture.md` §6.2). Convergence, no-loss and idempotence all pass on an
+  interleaving bug.
 
 **Trigger:** any convergence failure in simulation ⇒ Phase 13 does not exit.
 
@@ -255,10 +272,10 @@ explicit capability interface is the likely answer. Third-party plugins are not 
 
 | ID | Risk | P×I | Owner | Mitigation |
 |---|---|---|---|---|
-| R-12 | PDFium cannot be built for mobile outside Chromium's GN/depot_tools within budget | M×4=8 | Core lead | SP-1 is the gate. Fallback: a prebuilt-binary vendor (adds supply-chain risk) or purchasing a MuPDF commercial licence. |
+| R-12 | ~~PDFium cannot be built for mobile outside GN/depot_tools~~ → **PDFium cannot be built at our iOS deployment-target floor** | ~~M×4=8~~ → **L×4=4** | Core lead | **Re-scoped by SP-1** (`spikes/SP-1-findings.md`). The original premise is answered: it cannot be built outside GN, and it should not be tried — a hand-written CMake port is archived, never covered mobile, and would make the §7.8 licence inventory describe a build we do not ship. **We build from pinned source with upstream GN in a hermetic container in our CI, consumed as an `IMPORTED` CMake target.** Mobile builds are continuously proven upstream; the residual is that the maintained recipe targets iOS 17 while `adr/0002` decision 3 pushes our floor *down*. Gate: revised SP-1 criterion 2. Fallback unchanged (MuPDF commercial licence). |
 | R-13 | `sqlite-vec` recall or latency is inadequate at scale | M×3=6 | Search lead | SP-2. Fallbacks: `usearch`, `hnswlib`, or int8 quantisation with a coarse pre-filter. |
 | R-14 | Local LLM is unusable on the target device floor | M×3=6 | AI lead | SP-4. Honest fallback: local = embeddings + classification only; generation is cloud with an explicit policy gate. This is an acceptable v1.0. |
-| R-15 | Rust toolchain adds unacceptable mobile build friction | M×3=6 | Build lead | SP-6 tests it early. If it fails, write the RGA CRDT in C++ and drop `resvg` for NanoSVG. |
+| R-15 | ~~Rust toolchain adds unacceptable mobile build friction~~ | **CLOSED** | Build lead | **Closed by decision, not by test.** `adr/0002` decision 2 keeps Rust out of the mobile build entirely. This also settles SVG (NanoSVG, not `resvg` — `file-format-support.md` §7.5) and the tokenizer (AIQ-6). **Note what was traded:** a recoverable, early-detected build risk for an unrecoverable, late-detected correctness risk — see R-29. |
 | R-16 | EAV database views miss the 100 ms budget | M×3=6 | Core lead | Reference-only joins + materialised view cache; documented pivot-table escape hatch. |
 | R-17 | Cloud AI cost per user is unbounded | M×4=8 | Product lead | Token budgets, quotas, aggressive caching, local-first routing. **Blocked on PQ-1.** |
 | R-18 | An AI provider changes terms, pricing, or discontinues a model | H×2=6 | AI lead | The abstraction is the mitigation — ≥2 providers at v1.0, no provider-specific code in the core. |
@@ -271,7 +288,10 @@ explicit capability interface is the likely answer. Third-party plugins are not 
 | R-25 | CI cost and duration make the pipeline get bypassed | M×2=4 | Build lead | PR path budgeted at ≤ 25 min; expensive jobs nightly; core build cached across app-only changes. |
 | R-26 | Accessibility gaps discovered late | M×3=6 | Design lead | Automated scans in CI from Phase 10; manual screen-reader pass every release; a11y is a Definition-of-Done item, not a phase. |
 | R-27 | Fixture corpus contains copyrighted or personal data | L×4=4 | QA lead | `PROVENANCE.md` per fixture directory; synthetic data only; review at PR. |
-| R-28 | Web client scope creeps toward parity and consumes the schedule | M×3=6 | Product lead | Web is view-mostly by written decision; any parity request goes through scope review. |
+| R-28 | Web client scope creeps toward parity and consumes the schedule | M×3=6 | Product lead | Web is view-mostly by written decision; any parity request goes through scope review. **Under E2EE a web client must hold keys and index in-browser — this is now a product decision, not a port (N-12).** |
+| **R-29** | **The hand-written sequence CRDT has a merge defect that converges** — replicas agree on corrupted text | **M×5=10** | Sync lead | **New, from SP-6.** RGA has a published backward-interleaving anomaly, and convergence/idempotence/commutativity tests are all blind to it. Mitigations: build **Fugue** rather than classic RGA (needs ADR amendment, N-1); add **non-interleaving** as a fourth property with a dedicated backward-insertion generator; build a naive reference model first and differentially test the optimised implementation against it; specify tombstone GC (causal stability, 90-day horizon) and bounded causal-delivery buffering **before** writing merge code. **Compounding factor: under E2EE the server cannot be inspected to diagnose a production occurrence.** |
+| **R-30** | **Per-device corpus re-indexing (mandatory under E2EE) never completes on a low-end device** | **M×4=8** | AI / Search lead | **New, from the interaction of `adr/0002` decisions 1 and 3** — neither predicts it alone. Chunks and vectors never sync, so every device re-indexes locally; one of those devices has 2–3 GB RAM and eMMC. Mitigations: checkpointed, resumable, thermally- and battery-aware indexing; prioritise recently-accessed documents so the index is *useful* long before *complete*; an explicit "search is incomplete" state in the UI rather than silently under-returning. |
+| **R-31** | **PDFium roll maintenance lapses and a parser CVE ships** | M×4=8 | Core lead | **New, from SP-1.** Upstream has no releases, only `chromium/NNNN` branch heads, so staying current is an ongoing scripted job, not a one-off integration. Budget **≈ 0.5 ew/quarter** from Phase 5; the re-roll procedure is a documented Phase 5 deliverable; daily CVE monitoring already covers detection. |
 
 ---
 

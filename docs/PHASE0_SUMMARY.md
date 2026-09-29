@@ -6,6 +6,33 @@
 
 ---
 
+> ## ⚠ ADDENDUM (2026-09-29) — read this before §2
+>
+> **S-1, S-2 and S-3 have been decided** by the product owner in
+> `adr/0002-phase0-signoff-decisions.md`: **E2EE from v1.0**, a **custom C++ sequence CRDT**
+> (not `yrs`), and **low-end/older devices as a hard constraint**. The recommendations in §2
+> for those three rows are superseded — note that the §2 recommendation for S-3 was `yrs`, and
+> the decision went the other way.
+>
+> **S-4's three blocking spikes have been investigated**: see `docs/spikes/` —
+> `SP-1-findings.md`, `SP-5-findings.md`, `SP-6-findings.md`, and **`SPIKE_SUMMARY.md`, which
+> is the right entry point** and carries the new open questions (N-1 … N-12).
+>
+> Three things in this document are now wrong and are corrected elsewhere:
+>
+> 1. **The ~1004 ew total** is re-baselined to **≈ 1079 ew** (+7.5 %) —
+>    `engineering-complexity-estimate.md` §10 has the per-phase breakdown.
+> 2. **§4 item 5** says to treat Phases 5, 8 and 13 as the project. Still true, but **Phase 13
+>    now leads**: 76 → 93 ew, a from-scratch CRDT with a known algorithm-level trap, and an
+>    encrypted transport that prevents server-side diagnosis of production failures.
+> 3. **The §2 S-3 recommendation of `yrs`** is closed. SP-6 found that classic RGA — the
+>    algorithm `adr/0002` names — has a published backward-interleaving anomaly, and that the
+>    ADR's own stated mitigation (convergence, idempotence, commutativity) is structurally
+>    blind to it. **Open question N-1 asks for Fugue instead, and needs an answer before any
+>    merge code is written.**
+
+---
+
 ## 0. What exists now
 
 22 documents covering all 25 items of spec §40, plus this summary.

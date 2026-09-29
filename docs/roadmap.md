@@ -38,23 +38,44 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 
 **Deliverables**
 - The 22 documents in `docs/` (this set)
-- The 8 spikes in `technical-requirements.md` §6 (~32 engineer-days)
-- Sign-off on the open decisions in `PHASE0_SUMMARY.md`
+- The 8 spikes in `technical-requirements.md` §6 (**~38 engineer-days** after re-scoping:
+  SP-1 5→8 d, SP-6 5→8 d — `spikes/`)
+- Sign-off on the open decisions in `PHASE0_SUMMARY.md` — **done for S-1/S-2/S-3 via
+  `adr/0002`**
+- `docs/spikes/` findings for SP-1, SP-5, SP-6 plus `SPIKE_SUMMARY.md`
 
 **Done when**
 - [ ] All Phase 0 documents reviewed and signed off by a named human owner
-- [ ] SP-1 (PDFium mobile build), SP-5 (bridge cost) and SP-6 (CRDT choice) complete — these
-      three constrain the core's shape and block Phase 1
-- [ ] PQ-2 (E2EE) and PQ-7 (device floor) answered — both are architecture-level forks
+- [x] **PQ-2 (E2EE), SP-6 (CRDT engine) and PQ-7 (device floor) answered** — `adr/0002`
+- [x] **SP-1 investigated** — `spikes/SP-1-findings.md`. Passes as intended, fails as written;
+      approach changed to a hermetic GN build consumed from CMake.
+- [x] **SP-5 investigated** — `spikes/SP-5-findings.md`. Passes; produces four ABI rules that
+      must land in Phase 1's design.
+- [ ] **SP-1 revised criterion 2: PDFium builds and renders at our actual iOS deployment-target
+      floor** (not iOS 17). This is the only part of SP-1 still genuinely open.
+- [ ] **SP-6 re-scoped and run (8 d):** reference model + four property generators + a Fugue
+      prototype + the differential harness. **SP-6 is NOT complete** — it was scoped to choose
+      between two options, one of which `adr/0002` removed, and it found a defect in the one
+      that was kept.
+- [ ] **`adr/0002` decision 2 amended from "RGA" to "a Fugue-family sequence CRDT", or the
+      backward-interleaving anomaly explicitly accepted in writing** (`sync-architecture.md`
+      §6.1). One or the other — not left unsaid.
 - [ ] Every dependency in the "High confidence" set has a verified licence and a recorded verdict
-- [ ] The risk register has an owner per high risk
+- [ ] The risk register has an owner per high risk, **including new R-29 (converging merge
+      defect) and revised R-12**
 
 ---
 
 ## PHASE 1 — C/C++ core foundation
 
-**Entry:** Phase 0 signed off; SP-1, SP-5, SP-6 done
+**Entry:** Phase 0 signed off; SP-1 (revised), SP-5 and SP-6 (re-scoped) done
 **Effort:** 6–8 weeks
+
+> **From SP-5 — these are Phase 1 ABI design rules, not later optimisations.** Retrofitting
+> them across two platform bindings is expensive, which is why SP-5 blocks this phase:
+> pointer+length for bulk data (never per-item string getters); caller-allocated output
+> buffers; direct buffers only for opaque native↔native payloads; an explicit documented
+> owner and lifetime for every buffer crossing the boundary.
 
 **Deliverables**
 - CMake build for all six presets; CI green on all
@@ -88,6 +109,10 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 - Transaction API, single-writer serialisation, outbox table
 - Blob store: content-addressed, chunked AEAD, two-phase write, orphan sweep
 - Storage port with a fully in-memory fake for tests
+- **E2EE key hierarchy (`adr/0002` decision 1, +3 ew):** URK → workspace key → document key →
+  per-file key, with device key bundles and a rotation-aware key store. **The hierarchy must
+  exist from schema v1** — retrofitting a key level is a migration across every encrypted
+  byte a user owns.
 
 **Done when**
 - [ ] Migration framework tested forward from a fixture DB, with integrity assertions
@@ -148,8 +173,9 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 
 ## PHASE 5 — PDF engine
 
-**Entry:** Phase 4 done; SP-1 complete; **PDFium licence inventory checked in** (`file-format-support.md` §7.8)
-**Effort:** 14–18 weeks — the single largest engine phase
+**Entry:** Phase 4 done; SP-1 complete **including the iOS-deployment-target criterion**;
+**PDFium licence inventory checked in** (`file-format-support.md` §7.8)
+**Effort:** 14–18 weeks — the single largest engine phase. **78 → 82 ew** (+4, Tier D tiering)
 
 **Deliverables**
 - PDFium (render/parse) + QPDF (structure/encryption) integration behind our port
@@ -171,13 +197,20 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 - [ ] Low-confidence text extraction is detected and reported rather than returned as garbage
 - [ ] XFA documents display honestly (no false claim of support)
 - [ ] PDFium built without V8 and without XFA — verified in the build manifest
+- [ ] **PDFium is built from pinned source in a hermetic container in our CI** and consumed as
+      an `IMPORTED` CMake target; the re-roll procedure is scripted and documented
+      (`spikes/SP-1-findings.md` §5)
+- [ ] **Tier D budgets met** (`performance-strategy.md` §1.1): 1× render cap, 2-page bitmap
+      LRU, ≤ 16 MB tile cache, ≤ 180 MB peak RSS on a 500-page PDF
+- [ ] Bitmap pool and tile-cache depths are **derived at runtime from device memory class**,
+      verified by a test that fakes a low-RAM device
 
 ---
 
 ## PHASE 6 — Scanner
 
 **Entry:** Phase 5 done
-**Effort:** 7–9 weeks
+**Effort:** 7–9 weeks. **34 → 37 ew** (+3, Tier D capture tiering per `adr/0002` decision 3)
 
 **Deliverables**
 - OpenCV-based quad detection, perspective correction, enhancement (auto/colour/gray/BW,
@@ -187,7 +220,8 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 - Export: flat PDF, image set (searchable PDF lands in Phase 7)
 
 **Done when**
-- [ ] Quad detection ≥ 15 fps on Tier B at 640 px
+- [ ] Quad detection ≥ 15 fps on Tier B at 640 px; **capture resolution capped on Tier D so
+      perspective correction fits the 96 MB arena, verified on real Tier D hardware**
 - [ ] Detection accuracy measured on the 25-fixture scanned corpus, with the failure rate published
 - [ ] Manual override available on every automatic step
 - [ ] Batch session survives process death (checkpointing)
@@ -198,8 +232,8 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 
 ## PHASE 7 — OCR
 
-**Entry:** Phase 6 done; SP-3 complete
-**Effort:** 9–11 weeks
+**Entry:** Phase 6 done; **SP-3 complete and re-run on Tier D hardware, not only Tier B**
+**Effort:** 9–11 weeks. **44 → 49 ew** (+5, Tier D per `adr/0002` decision 3)
 
 **Deliverables**
 - `OCRProviderPort` with three implementations: Tesseract, Apple Vision, ML Kit
@@ -213,7 +247,13 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 - [ ] English OCR works offline out of the box (bundled `eng` pack)
 - [ ] CER measured per language on the 24-fixture multi-language corpus; **results published
       internally so product claims stay honest**
-- [ ] Per-page budget met on Tier B (2.5 s Tesseract, 600 ms platform)
+- [ ] Per-page budget met on Tier B (2.5 s Tesseract, 600 ms platform) **and on Tier D (6 s
+      Tesseract, 1.5 s platform, serial, 200 DPI)** — `performance-strategy.md` §1.2
+- [ ] **`tessdata_fast` ships; `tessdata_best` is absent from the build**, verified in the
+      manifest (≈ 4–5 MB vs ≈ 15–23 MB — the difference is most of the Tier D install budget)
+- [ ] **CER is measured and published internally per language AND per tier.** A 200 DPI Tier D
+      path with different numbers is a different claim, and must not inherit Tier B's.
+- [ ] Peak RSS during OCR ≤ 150 MB on Tier D; never parallel across pages there
 - [ ] Searchable PDF verified: extracted text matches OCR output and is positioned correctly
 - [ ] RTL and CJK fixtures produce correct reading order
 - [ ] Handwriting is labelled BEST-EFFORT in-product, never "supported"
@@ -271,10 +311,21 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 ## PHASE 10 — Android application
 
 **Entry:** Phase 9 done
-**Effort:** 14–18 weeks
+**Effort:** 14–18 weeks. **Phases 10+11 combined: 144 → 157 ew** (+9 E2EE key/consent UX,
++4 Tier D runtime cache sizing and low-RAM paths)
+
+> **The E2EE user-facing crypto UX is the part to not underestimate here.** Recovery-phrase
+> onboarding with forced verification, QR + out-of-band short-code device enrolment,
+> per-document consent prompts, lost-device and revocation flows — these need real usability
+> testing, because a user who skips the short-code check has no protection against T-309, and
+> a user who dismisses the recovery phrase has no protection against anything.
 
 **Deliverables**
 - `uapp-kotlin` JNI binding with lifetime, threading and error mapping
+- **E2EE UX:** recovery-phrase generation with mandatory re-entry verification; device
+  enrolment via QR + short-code comparison; per-document AI consent prompts; device list,
+  revocation, and the honest "this stops future access only" wording
+  (`security-model.md` §5A)
 - Compose UI for all P0 flows: workspace, editor, files, PDF viewer/editor, scanner, search,
   settings
 - CameraX integration; SAF; WorkManager; Keystore; biometrics; share sheet; deep links
@@ -284,7 +335,14 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 - [ ] Every binding entry point tested including error and cancellation paths
 - [ ] Zero leaked handles at teardown, verified under ASan
 - [ ] No JNI call reaches the main thread (assertion holds across the E2E suite)
-- [ ] Bitmap rendering is copy-free (SP-5 approach implemented)
+- [ ] **Bitmap rendering is copy-free** — `AndroidBitmap_lockPixels` + `FPDFBitmap_CreateEx`,
+      **verified by a copy counter in the benchmark harness, not by a timing**
+      (`spikes/SP-5-findings.md` §5). A timing gate can be passed by a copying implementation.
+- [ ] **≤ 1 boundary crossing per screenful of blocks**, verified by a crossing counter
+- [ ] No `GetPrimitiveArrayCritical` held across any render or parse; no
+      `GetByteArrayElements` on a hot path (lint-enforced)
+- [ ] **Bitmap pool and tile-cache depths derived at runtime** from `isLowRamDevice()` /
+      `getMemoryClass()`; Tier D journeys pass on real Tier D hardware
 - [ ] All P0 journeys pass, including airplane-mode variants
 - [ ] Accessibility: TalkBack pass on every P0 flow
 - [ ] Startup, memory and frame budgets met on Tier B and Tier C
@@ -318,11 +376,18 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 
 ## PHASE 12 — Cloud backend
 
-**Entry:** Phases 10 and 11 done
-**Effort:** 12–16 weeks
+**Entry:** Phases 10 and 11 done; **`adr/0002` §5A key-management design items settled**
+(recovery-phrase encoding; whether the platform-keychain copy holds the URK or a wrapped URK;
+whether PIN+enclave escrow is committed for v1.1 — the last changes the v1.0 data model)
+**Effort:** 12–16 weeks. **62 → 64 ew** — a large E2EE *saving* (−8: no server-side merge,
+index, thumbnailing or RAG) nearly cancelled by a large E2EE *cost* (+10: device enrolment,
+sealed-bundle storage and fan-out, rotation orchestration)
 
 **Deliverables**
 - Identity, workspace, blob, sync, AI-gateway and conversion services
+- **E2EE device enrolment and key distribution (`security-model.md` §5A):** sealed-bundle
+  storage and fan-out, enrolment notification to all devices, revocation-triggers-rotation
+  orchestration. **The server stores and forwards opaque ciphertext; it holds no key.**
 - PostgreSQL schema with RLS; object storage; change log
 - REST `/v1` per `api-design.md`, with OpenAPI as the source of truth
 - Auth: JWT + rotating refresh with reuse detection; MFA; device registration/revocation
@@ -337,24 +402,56 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 - [ ] Load tested to the projected first-year peak with headroom
 - [ ] Backup **restore** rehearsed successfully, not just backup
 - [ ] GDPR export and deletion work end to end, including backups within the published SLA
+- [ ] **Revoking a device rotates the workspace key and re-wraps to remaining devices** —
+      tested, not assumed. De-listing without re-encryption is a failing test (T-310).
+- [ ] **A device offline across a rotation catches up correctly on reconnect**
+- [ ] **Support runbooks are written on the basis that support cannot read user data and
+      cannot recover a lost key.** This is a launch blocker, not a nice-to-have.
 
 ---
 
 ## PHASE 13 — Synchronisation
 
-**Entry:** Phase 12 done; **PQ-2 (E2EE) answered**; SP-6 decision implemented
-**Effort:** 14–18 weeks — **the highest-risk phase**
+**Entry:** Phase 12 done; **re-scoped SP-6 passed** (reference model + Fugue prototype +
+differential harness); **the algorithm decision in `adr/0002` confirmed or amended**
+**Effort:** 14–18 weeks → **16–20 weeks. 76 → 93 ew** (+8 E2EE framing, +9 custom CRDT).
+**This is now the most dangerous phase in the project**, ahead of 5 and 8: Low confidence,
+"Very High" correctness risk, a from-scratch CRDT with a known algorithm-level trap, and an
+encrypted transport that prevents server-side debugging of exactly the failures that are
+hardest to reproduce.
 
 **Deliverables**
 - Version vectors, Lamport clocks, device signing
 - Outbox, pusher with backoff and dead-lettering, puller with transactional apply
-- Per-datatype merge strategies; sequence CRDT for text
+- Per-datatype merge strategies; **custom C++ Fugue-family sequence CRDT for text**
+- **Naive reference model + differential harness** (`sync-architecture.md` §6.2)
+- **Tombstone GC bounded by the 90-day causal-stability horizon; bounded causal-delivery
+  buffering**
+- **Encrypted op/snapshot framing; snapshot cadence and server-side pruning**
+  (`sync-architecture.md` §10) — **all merging and all conflict resolution are client-side**
 - Conflict detection, automatic resolution, and the conflict inbox UI
 - Selective sync and blob sync
 - Deterministic simulation harness
 
 **Done when**
 - [ ] Convergence, no-loss and idempotence property tests pass over 10⁶ simulated operations
+- [ ] **Non-interleaving property passes, using its dedicated backward-insertion generator**
+      (`sync-architecture.md` §6.2 P4). **Convergence tests alone cannot detect this defect
+      class — they pass while the user sees corrupted text.** If only one line of this phase
+      is enforced, it is this one.
+- [ ] **The optimised CRDT produces byte-identical documents to the naive reference model**
+      across every generated interleaving
+- [ ] **No plaintext reaches the server — as a test.** A full sync round-trip against a real
+      server instance asserts that no known plaintext token appears in its database, object
+      store, logs or metrics. Fails the build. Same weight as the Phase 14 egress test.
+- [ ] Tamper tests pass: flipped ciphertext byte, swapped `doc_id`, replayed `snapshot_id`,
+      reused `device_counter` — all rejected
+- [ ] Key-rotation convergence: replicas rotating mid-session, one offline across the
+      rotation, still converge
+- [ ] Snapshot pruning is safe: a client pulling after the server prunes superseded updates
+      reconstructs an identical document
+- [ ] An operation referencing a GC'd tombstone is **rejected cleanly**, never UB
+- [ ] Out-of-causal-order operations are buffered within a bound; overflow escalates visibly
 - [ ] Partition/heal tests pass
 - [ ] **Every LWW loser is provably recoverable from version history** (tested, not asserted)
 - [ ] The `reset_required` full-resync path is implemented and tested
@@ -367,12 +464,19 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 
 ## PHASE 14 — AI
 
-**Entry:** Phase 13 done; SP-4 complete; **PQ-3 (providers) answered**
-**Effort:** 10–13 weeks
+**Entry:** Phase 13 done; **SP-4 complete and re-run on Tier D** (§1.2 says a ~1 B model does
+not fit there — SP-4 must confirm or refute against real hardware); **PQ-3 (providers)
+answered**
+**Effort:** 10–13 weeks. **52 → 62 ew** (+6 E2EE consent flow, +4 Tier D capability gating)
 
 **Deliverables**
 - `AIProviderPort` + ≥2 cloud adapters + local (llama.cpp, ONNX Runtime)
 - **Policy gate** with workspace policy, consent, quota, audit
+- **Per-document decrypt-and-send consent flow** (`ai-architecture.md` §13.2): scope
+  resolution to exact byte ranges, a preview of what leaves, consent records written **before**
+  decryption, hash-chained into the audit log, and honest revocation semantics
+- **Device-capability probe driving what is offered:** local generation is **off on Tier D**
+  with a named reason, not slow (`performance-strategy.md` §1.2)
 - Router with circuit breaking and explainable selection
 - Task services: summarize, rewrite, translate, classify, extract, study artefacts
 - Model lifecycle management
@@ -388,17 +492,30 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 - [ ] Eval suites established with baselines recorded
 - [ ] Local vs. cloud quality delta measured and published internally
 - [ ] Every shipped model has a reviewed licence row in `THIRD_PARTY_NOTICES`
+- [ ] **No plaintext leaves the device without a consent record written first** — tested the
+      same way as the LOCAL_ONLY egress test, and failing the build the same way
+- [ ] **A LOCAL_ONLY workspace shows no consent prompt at all.** It fails closed with
+      `AI_POLICY_BLOCKED`; there is no dialog that can talk it into egress (H-29).
+- [ ] The decrypted scratch buffer is zeroed on completion **and** on the crash-recovery
+      sweep (T-206)
+- [ ] Agent runs block on the same consent prompt mid-run; there is no "approve all"
+- [ ] Revocation UI states plainly that it stops future egress and cannot recall what was sent
 
 ---
 
 ## PHASE 15 — RAG
 
 **Entry:** Phase 14 done; SP-2 complete
-**Effort:** 8–10 weeks
+**Effort:** 8–10 weeks. **42 → 49 ew** (+7, per-device indexing under E2EE)
 
 **Deliverables**
 - Structure-aware chunking with full provenance
 - Embedding pipeline with `content_hash` incrementality
+- **Per-device corpus indexing as a first-class background job** (`ai-architecture.md` §13.3):
+  chunks and vectors do not sync, so **every new device re-indexes its whole corpus locally**
+  — hours of work for a large workspace. Checkpointed, resumable, thermally- and
+  battery-aware, prioritised by recent access so the index is *useful* long before it is
+  *complete*, with honest progress and an explicit "search is incomplete" state.
 - `sqlite-vec` index (+ int8 quantisation above the size threshold)
 - Hybrid retrieval with RRF; permission filtering post-retrieval
 - Context assembly with budgeting
@@ -415,6 +532,12 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 - [ ] Retrieval and embedding budgets met
 - [ ] Vector index memory within budget at 400k chunks
 - [ ] A model change forces a full re-embed rather than silently mixing embedding spaces
+- [ ] **One embedding model across all tiers, chosen to fit Tier D** — two devices of the same
+      user must never hold vectors in different spaces (`ai-architecture.md` §13.4)
+- [ ] **No chunk, vector or embedding row is ever pushed to the server** — verified by the
+      Phase 13 no-plaintext test extended to derived content (A4 is as sensitive as A1)
+- [ ] Indexing completes on Tier D within a stated wall-clock target on a reference corpus,
+      or the corpus size at which it does not is published internally
 
 ---
 
@@ -465,16 +588,20 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 ## PHASE 18 — Security hardening
 
 **Entry:** Phase 17 done
-**Effort:** 8–10 weeks
+**Effort:** 8–10 weeks. **42 → 36 ew (−6)** — E2EE has **moved out of this phase** into
+Phases 2, 12 and 13 per `adr/0002` decision 1. Phase 18 now *reviews* E2EE rather than
+building it, which is the whole point of deciding PQ-2 early.
 
 **Deliverables**
-- External penetration test and remediation
+- External penetration test and remediation — **scoped to include the E2EE key-exchange,
+  rotation and recovery paths, which are the newest and least-reviewed code in the product**
 - Tamper-evident audit log
 - Certificate-pin rotation procedure implemented and rehearsed
 - Key rotation; secure deletion verification
 - PKCS#7 digital signatures (if P-13 is approved)
-- E2EE (if PQ-2 says yes) — **note: if yes, this reshapes Phases 12–15 and must move earlier**
-- Full threat-model review
+- ~~E2EE (if PQ-2 says yes)~~ — **built in Phases 2/12/13. Reviewed here.**
+- Full threat-model review, **including T-309 (enrolment key substitution) and T-310
+  (revocation without rotation)**
 
 **Done when**
 - [ ] All pentest findings closed or formally accepted with a named owner
@@ -489,10 +616,13 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 ## PHASE 19 — Performance optimisation
 
 **Entry:** Phase 18 done
-**Effort:** 6–8 weeks
+**Effort:** 6–8 weeks → **8–10 weeks. 32 → 40 ew** (+8). **A second *gating* device tier
+roughly doubles the device-matrix profiling work**, and Tier D is the tier where the budgets
+are hardest to hit.
 
 **Deliverables**
-- Profiling across the device matrix; targeted optimisation
+- Profiling across the device matrix **including Tier D on reserved physical hardware**;
+  targeted optimisation
 - Startup optimisation (baseline profiles, order files)
 - Memory reduction; cache tuning
 - Battery and thermal tuning
@@ -500,6 +630,11 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 
 **Done when**
 - [ ] **Every budget in `performance-strategy.md` §2 is met on Tier B**
+- [ ] **Every Tier D budget in `performance-strategy.md` §1.1 is met.** Tier D is a gating
+      tier per `adr/0002` decision 3, not a degradation check — a Tier D memory breach fails
+      the build exactly as a Tier B one does.
+- [ ] **The Tier D degradation matrix (§1.3) is implemented and every row is announced
+      in-product with a reason.** Silently-slow is a failure; disabled-and-explained is not.
 - [ ] Tier C degrades explicitly, with disabled features named in-product
 - [ ] Benchmark regression gates are blocking in CI
 - [ ] Production telemetry and alerts are live
@@ -543,11 +678,28 @@ a team of 4–6). These are planning estimates for a feasibility study, not comm
 - Phase 16 (agents) can overlap Phase 15's tail.
 
 **Hard ordering constraints:**
-- 13 (sync) **must** follow 12 (backend) and cannot start before PQ-2 is answered.
+- 13 (sync) **must** follow 12 (backend).
 - 15 (RAG) **must** follow 14 (AI), which must follow 13 — retrieval needs synced content.
-- **If PQ-2 resolves to "E2EE at v1.0", the E2EE work moves from Phase 18 to before Phase 12**,
-  because it changes the backend and sync designs fundamentally. Discovering this late would be
-  the single most expensive mistake available to this project.
+- ~~If PQ-2 resolves to "E2EE at v1.0", the E2EE work moves from Phase 18 to before Phase 12.~~
+  **PQ-2 is answered (`adr/0002` decision 1) and this has happened.** The key hierarchy lands
+  in **Phase 2**, enrolment and rotation in **Phase 12**, encrypted framing and client-side
+  merge in **Phase 13**, the consent flow in **Phase 14**, per-device indexing in **Phase 15**.
+  Phase 18 reviews rather than builds. This reordering is the single largest structural change
+  in this revision of the roadmap, and it was made *before* Phase 1 rather than during Phase
+  18 — which was the whole reason PHASE0_SUMMARY ranked PQ-2 first.
+- **The E2EE key hierarchy must be in schema v1 (Phase 2).** Adding a key level later is a
+  migration across every encrypted byte a user owns.
+- **`adr/0002` decision 2 must be confirmed or amended before Phase 1** — the Fugue-vs-RGA
+  question (`sync-architecture.md` §6.1). It is cheap now and expensive once the merge code
+  exists.
+- **Tier D hardware must be in the benchmark rack from Phase 5**, not from Phase 19. A gating
+  tier discovered at optimisation time is not a gating tier; it is a crisis.
 
-**Phases most likely to slip:** 5 (PDF), 8 (conversion), 13 (sync). Together they are roughly
-45 % of total effort. Any schedule that does not budget contingency on these three is wrong.
+**Phases most likely to slip:** **13 (sync) first**, then 5 (PDF) and 8 (conversion). Phase 13
+has moved to the front of that list: it is now 93 ew, it carries a from-scratch CRDT with a
+published algorithm-level trap, and E2EE means a failure in production cannot be diagnosed by
+looking at the server. Together the three are roughly 45 % of total effort. Any schedule that
+does not budget contingency on them is wrong.
+
+**Revised totals after `adr/0002`:** ≈ **1079 ew** full scope, ≈ **865–870 ew** narrowed.
+See `engineering-complexity-estimate.md` §10.

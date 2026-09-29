@@ -251,14 +251,23 @@ Time-boxed, with a pass/fail criterion. These are the "Low"/"Medium" confidence 
 
 | # | Spike | Question | Pass criterion | Box |
 |---|---|---|---|---|
-| SP-1 | PDFium mobile build | Can we build a trimmed PDFium (no XFA, no V8, no Skia) for arm64-v8a + arm64-ios via CMake without Chromium's GN/depot_tools? | Static lib ≤ 12 MB, renders the fixture corpus, builds from our CMake | 5 d |
+| SP-1 | PDFium mobile build **[REVISED — `spikes/SP-1-findings.md`]** | ~~Build via CMake without GN/depot_tools?~~ **Answered: no, and it should not be attempted.** Revised: can we build from pinned source with upstream GN in a hermetic container, **at our actual iOS deployment-target floor**, and consume it from CMake as an `IMPORTED` target? | (1) reproducible container build for android-arm64/arm + ios-arm64/sim; (2) **builds and renders at our iOS floor, not iOS 17**; (3) **stripped, GC'd contribution to the linked binary** ≤ 12 MB per arch (not `.a` size); (4) fixture corpus renders; (5) `gn desc` licence inventory checked in; (6) scripted re-roll procedure | ~~5 d~~ **8 d** |
 | SP-2 | `sqlite-vec` at scale | Recall and latency for 250k × 384-dim chunks on a mid-tier phone | recall@10 ≥ 0.9 vs. exact, p95 ≤ 120 ms, index ≤ 1.5× raw vectors | 3 d |
 | SP-3 | Tesseract footprint | Binary size + per-page latency + accuracy vs. platform OCR on our fixture set | ≤ 2.5 s/page A4 300 DPI, CER within 5 pts of platform OCR on printed text | 4 d |
 | SP-4 | Local LLM feasibility | Can a 1–3 B quantised model run usefully in our RAM budget on the target floor device? | ≥ 8 tok/s, peak RSS ≤ 2.5 GB, no thermal throttle within 60 s | 4 d |
-| SP-5 | JNI/Swift bridge cost | Overhead of moving a 4 MB page bitmap and a 10k-block tree across the boundary | bitmap via shared/direct buffer ≤ 1 ms; tree via FlatBuffers ≤ 10 ms | 3 d |
-| SP-6 | CRDT choice | Own C++ RGA vs. `yrs`: build-integration cost and convergence under a fuzz harness | a decision memo + working prototype of the winner | 5 d |
+| SP-5 | JNI/Swift bridge cost **[REVISED — `spikes/SP-5-findings.md`]** | Overhead of moving a 4 MB page bitmap and a 10k-block tree across the boundary | ~~bitmap ≤ 1 ms~~ → **zero copies, asserted by a copy counter** (a 4 MB memcpy is already 0.4–0.8 ms, so a timing gate has no margin); tree ≤ 10 ms **and ≤ 1 crossing per screenful**; no `GetPrimitiveArrayCritical` across a render; no global-ref leaks | 3 d |
+| SP-6 | **Sequence CRDT [RE-SCOPED — `spikes/SP-6-findings.md`]** | ~~Own C++ RGA vs. `yrs`?~~ **`adr/0002` closed the language question.** Revised: **which algorithm** (SP-6 found RGA's published backward-interleaving anomaly), and what constitutes proof before it carries user data? | Naive reference model + four property generators (convergence, idempotence, commutativity, **non-interleaving**); Fugue prototype in C++; differential harness proving the optimised impl byte-identical to the reference over ≥ 10⁶ ops; a memo fixing the tombstone-GC horizon rule | ~~5 d~~ **8 d** |
 | SP-7 | Compose Multiplatform desktop | Does the document canvas perform acceptably on desktop? | 60 fps scroll on a 500-page PDF at 1440p | 3 d |
 | SP-8 | DOCX fidelity baseline | Parse a 20-document real-world corpus; measure what fraction of content survives to UDM | ≥ 95 % of text + ≥ 80 % of structural features, with a measured, published gap list | 5 d |
 
-**Total: ~32 engineer-days.** Phase 1 should not start until SP-1, SP-5 and SP-6 are done,
-because they constrain the core's shape.
+**Total: ~~~32~~ ≈ 38 engineer-days** after re-scoping SP-1 (5→8 d) and SP-6 (5→8 d).
+Phase 1 should not start until SP-1, SP-5 and SP-6 are done, because they constrain the core's
+shape.
+
+**Status (2026-09-29):** SP-1 and SP-5 are investigated and written up in `docs/spikes/`;
+SP-1's only open item is the iOS deployment-target criterion, and SP-5 passes. **SP-6 is not
+complete** — it was scoped to choose between two options, `adr/0002` removed one of them, and
+it found a defect in the one that was kept. **SP-3 and SP-4 must additionally be re-run on
+Tier D hardware** per `adr/0002` decision 3; their existing pass criteria were written against
+Tier B and do not transfer (`performance-strategy.md` §1.2 indicates a ~1 B local model does not
+fit on Tier D at all, which SP-4 must confirm or refute against real hardware).

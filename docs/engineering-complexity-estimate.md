@@ -38,6 +38,12 @@ DevOps beyond the pipeline itself, support, or slack for vacation and attrition.
 
 ## 2. Phase-by-phase estimate
 
+> **RE-BASELINE (2026-09-29), after `adr/0002` and the SP-1/SP-5/SP-6 findings.** The table
+> below is the **original** Phase 0 estimate. It assumed (assumption 4) that E2EE was *not*
+> in v1.0, said nothing about a custom CRDT, and was written against a Tier B device floor.
+> All three assumptions have been overturned by product-owner sign-off. **§10 restates the
+> affected phases and the new total. Read §10 with this table, not instead of it.**
+
 | Phase | Name | Low (ew) | **Likely (ew)** | High (ew) | Conf. | Primary complexity driver |
 |---|---|---:|---:|---:|---|---|
 | 0 | Architecture & feasibility | 16 | **24** | 32 | H | 8 spikes (~6.5 ew) + documentation + sign-off cycles |
@@ -186,10 +192,17 @@ cheap cuts are the ones that sound big in a feature list.
 1. Experienced engineers: ≥ 5 years each, with genuine C++ depth on the core team.
 2. Specialty knowledge (PDF internals, CRDTs, mobile native, ML integration) is present or
    hired **before** the relevant phase (risk R-21).
-3. The spikes in `technical-requirements.md` §6 complete successfully. A failed SP-1 (PDFium
-   mobile build) adds 15–30 ew or forces a commercial MuPDF licence.
-4. E2EE is **not** in v1.0. If it is, add ~40 ew and reorder Phases 12–15 — the cost is in the
-   redesign, not the crypto.
+3. ~~The spikes complete successfully.~~ **Partly settled.** SP-1 and SP-5 are investigated
+   (`spikes/`). SP-1 passes *as intended* but fails as originally written; the residual risk is
+   narrowed to the iOS deployment-target floor. SP-5 passes comfortably. **SP-6 is not
+   complete and found a defect in the chosen algorithm — see §10.**
+4. ~~E2EE is **not** in v1.0.~~ **Overturned by `adr/0002` decision 1.** E2EE ships at v1.0.
+   The old "+~40 ew" figure was a guess made while the answer was still open; §10 replaces it
+   with a per-phase breakdown.
+4a. ~~The device floor is Tier B.~~ **Overturned by `adr/0002` decision 3.** Tier D (2–3 GB
+   RAM) is a gating tier. See §10.
+4b. ~~The text CRDT is `yrs`.~~ **Overturned by `adr/0002` decision 2.** A custom C++
+   sequence CRDT is built from scratch. See §10.
 5. Legacy binary Office formats are server-only. Native parsers would add 40–60 ew.
 6. No A/V transcoding. Adding it costs 15–25 ew plus the patent question.
 7. Real devices are available for benchmarking from Phase 5 onward.
@@ -229,3 +242,115 @@ Honest options, with their costs:
 **The only two that are genuinely attractive** are purchasing a PDF licence (buys down the
 highest-risk integration) and the narrowed v1.0 in §6. The rest trade away things the product
 cannot do without.
+
+---
+
+## 10. Re-baseline after `adr/0002` (2026-09-29)
+
+Three product-owner decisions landed after the §2 table was written, and each invalidates an
+assumption in §7. **None of them is a mistake** — decisions 1 and 3 are the kind of thing that
+is far cheaper to decide now than in Phase 18 — but all three cost money, and an estimate that
+did not move would be a wish rather than an estimate.
+
+### 10.1 Decision 1 — E2EE from v1.0
+
+The old assumption 4 said "+~40 ew". That was a placeholder. The real cost is spread across
+five phases, and — importantly — **part of it is a saving**, because a server that cannot read
+content is a smaller server.
+
+| Phase | Δ ew | Why |
+|---|---:|---|
+| 2 Storage | **+3** | Key hierarchy extended to URK → WSK → document key; device key bundles; rotation-aware key store |
+| 12 Cloud backend | **−8** | **Cheaper.** No server-side merge, no server-side index, no server-side thumbnailing, no server-side RAG. The sync service becomes an authenticated ordered relay, which is a much smaller service than a merging one. |
+| 12 Cloud backend | **+10** | But: device enrolment/attestation flows, sealed-bundle storage and fan-out, rotation orchestration, and a support process that cannot read data |
+| 13 Sync | **+8** | Encrypted op/snapshot framing; snapshot cadence and pruning; all merge and conflict logic moves client-side; the "no plaintext on the server" integration test |
+| 14 AI | **+6** | Per-document consent flow, consent records, scope resolution and byte-range preview, revocation semantics, audit integration |
+| 15 RAG | **+7** | Per-device corpus indexing as a first-class, resumable, throttled, honest-progress background job; incomplete-index UX; no server-side embedding path to fall back on |
+| 18 Security hardening | **−6** | **Cheaper.** E2EE moves *out* of Phase 18 (where the old roadmap put it) and into 2/12/13. Phase 18 reviews it instead of building it. |
+| 10/11 Mobile | **+9** | Recovery-phrase onboarding with forced verification; QR/short-code device enrolment UI; consent prompts; lost-device and revocation flows. **This is user-facing crypto UX, which is slow and requires real usability testing — it is not a dialog.** |
+| **Net** | **+29** | |
+
+**Lower than the old +40, but distributed differently and earlier** — which is the part that
+matters, because it lands on the critical path (12 → 13 → 14 → 15) rather than at the end.
+
+### 10.2 Decision 2 — custom C++ sequence CRDT
+
+| Phase | Δ ew | Why |
+|---|---:|---|
+| 13 Sync | **+9** | The sequence-CRDT line item goes from 6–8 ew (classic RGA + a convergence fuzzer) to 15–17 ew: Fugue rather than RGA, a naive reference model, a differential harness, the non-interleaving property with its own generator, tombstone GC with causal stability, and bounded causal-delivery buffering. See `spikes/SP-6-findings.md` F-6. |
+| 17 Collaboration | **+4** | Real-time editing now sits on a CRDT we wrote, so presence and live editing carry our own correctness risk rather than an upstream library's |
+| **Net** | **+13** | |
+
+**Offsetting saving: 0 ew, but a real one in kind.** Rust never enters the mobile build, so
+`cargo-ndk`, target triples, dSYM handling and a second toolchain in CI are all avoided. That
+was the *only* thing the `yrs` path cost, and it was the cheaper risk. We have traded a
+recoverable build risk for an unrecoverable correctness risk, knowingly (R-22).
+
+### 10.3 Decision 3 — low-end device support as a hard constraint
+
+| Phase | Δ ew | Why |
+|---|---:|---|
+| 5 PDF | **+4** | Render-scale and cache tiering, `RGB_565` paths, runtime-derived cache sizing, Tier D fixture runs |
+| 6 Scanner | **+3** | Capture-resolution tiering; the CV pipeline must fit a 96 MB arena, which is empirical work |
+| 7 OCR | **+5** | `tessdata_fast`-only path, 200 DPI recognition path, serial scheduling, relaxed-budget UX, per-tier accuracy measurement (we must now publish CER *per tier*, not just per language) |
+| 8 Conversion | **+4** | 96 MB arena and an explicit too-large-for-this-device failure path everywhere, rather than an OOM |
+| 14 AI | **+4** | Device-capability probe driving model offering; the "no local generation here, and here's why" UX; one-embedding-model-for-all-tiers constraint |
+| 19 Performance | **+8** | **A second gating device tier roughly doubles the device-matrix profiling work**, and Tier D is the tier where budgets are hardest to hit |
+| 10/11 Mobile | **+4** | Runtime cache sizing, low-RAM code paths, Tier D fixture journeys in the E2E suite |
+| **Net** | **+32** | |
+
+### 10.4 Combined effect
+
+| | ew |
+|---|---:|
+| Original §2 likely total | 1004 |
+| Decision 1 — E2EE from v1.0 | **+29** |
+| Decision 2 — custom C++ sequence CRDT | **+13** |
+| Decision 3 — low-end device floor | **+32** |
+| Spike re-scoping (SP-1 5→8 d, SP-6 5→8 d; ≈ +1 ew in Phase 0) | **+1** |
+| **Revised likely total** | **≈ 1079 ew ≈ 20.8 engineer-years** |
+
+**≈ +7.5 % on the whole programme.** That is a reasonable price for closing the single
+largest architectural fork before Phase 1 rather than during Phase 18, and it is far less than
+the retrofit would have cost — the original PHASE0_SUMMARY called answering PQ-2 late "the most
+expensive available mistake", and it was right.
+
+**The phases that move most:**
+
+| Phase | Was | Now | Δ |
+|---|---:|---:|---:|
+| 13 Sync | 76 | **93** | +17 |
+| 12 Backend | 62 | **64** | +2 (a large saving and a large cost, nearly cancelling) |
+| 19 Performance | 32 | **40** | +8 |
+| 15 RAG | 42 | **49** | +7 |
+| 14 AI | 52 | **62** | +10 |
+| 10/11 Mobile | 144 | **157** | +13 |
+| 7 OCR | 44 | **49** | +5 |
+| 18 Security | 42 | **36** | −6 |
+
+**Phase 13 is now unambiguously the most dangerous phase in the project** — 93 ew, Low
+confidence, "Very High" correctness risk, a from-scratch CRDT with a known algorithm-level
+trap, and an encrypted transport that prevents server-side debugging of exactly the failures
+that are hardest to reproduce. §4's advice to concentrate the best people on Phases 5, 8 and
+13 should now read **13 first**.
+
+### 10.5 Effect on the narrowed v1.0 (§6)
+
+The narrowed v1.0 does **not** escape any of this. All three decisions land on phases it
+retains — sync, backend, AI, RAG, OCR, performance, both mobile apps. Only Phase 17's +4 falls outside
+it, and Phases 5 and 8 are reduced there, so the increase is slightly smaller but not much:
+**799 ew → ≈ 865–870 ew**,
+and at 8 engineers roughly **2.6–3.0 years** rather than 2.4–2.8. §6's finding holds and is
+reinforced: the expensive parts are load-bearing for any version.
+
+### 10.6 Confidence
+
+Overall confidence is **unchanged at Low-to-Medium**, and the reasons have shifted rather than
+improved:
+
+- **Improved:** SP-1 and SP-5 are investigated; the PDF build path and the bridge design are
+  no longer unknowns. R-12 and PR-7 both drop.
+- **Worsened:** SP-6 found a real algorithm defect, the custom CRDT is now on the critical
+  path, and Tier D is a gating tier we have never measured anything against. **The next
+  material confidence improvement comes from SP-6's revised prototype and from getting real
+  Tier D hardware into the benchmark rack — not from more analysis.**

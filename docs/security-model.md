@@ -92,7 +92,9 @@ its source.
 |---|---|---|---|---|
 | T-301 | MITM / hostile CA | Critical | TLS 1.3 minimum; certificate pinning with a backup pin; pin rotation ships ahead of cert rotation (see §7) | Low |
 | T-302 | Stolen refresh token replayed | Critical | Rotating single-use refresh tokens with reuse detection → revoke the whole family and notify | Low |
-| T-303 | Server breach dumps the content DB | Critical | Blobs encrypted at rest with per-file keys; DB encrypted at rest; **but without E2EE the server can decrypt.** | **High until PQ-2 is decided.** Risk R-03. |
+| T-303 | Server breach dumps the content DB | Critical | **E2EE from v1.0 (`adr/0002` decision 1, §5A).** The server holds no key: a dump yields ciphertext plus metadata. Blobs, CRDT operations and snapshots are all sealed client-side. | **Low for content** — a database dump is no longer a content dump, which is what TB-3 was designed for. **Medium for metadata** (§5A.5). Risk R-03 downgraded. |
+| T-309 | **New.** Malicious server substitutes its own public key during device enrolment and receives the workspace keys | **Critical** | Out-of-band short-code verification between the enrolling and the enrolling-from device (§5A.2, mechanism 1); enrolment notifies all devices and is audited; step-up auth required | **Medium.** The defence is a user action that can be skipped by a user in a hurry. Key transparency is the real fix and is out of scope at v1.0 (§5A.6). |
+| T-310 | **New.** Revoked device retains access because revocation did not rotate the workspace key | **Critical** | Revocation **always** rotates the WSK and re-wraps to remaining devices, then writes a new snapshot (§5A.3). "De-list without re-encrypt" is explicitly prohibited. | Low, **provided** rotation is tested as part of revocation rather than assumed. Forward secrecy for already-synced content is not claimed. |
 | T-304 | Broken object-level authorisation (IDOR) | Critical | Every handler authorises the *subject against the object*, not just authenticates; Postgres RLS as a second net; an automated test asserts every endpoint rejects a cross-tenant id | Low |
 | T-305 | A malicious/compromised device pushes poisoned sync data | High | Mutations signed by the device key; server verifies the device is registered and unrevoked; server validates payload schema and size; per-device rate limits; revocation invalidates future pushes | Medium — a compromised device can still corrupt its own user's data; version history is the recovery path |
 | T-306 | Presigned URL leaked or shared | Medium | 5-minute expiry, single-use where the storage backend supports it, scoped to one object and one method | Low |
@@ -170,10 +172,193 @@ Device Keystore / Secure Enclave  (hardware-backed, non-exportable)
 - **Nothing derives a key from a password on the client without Argon2id** (`opslimit=4`,
   `memlimit=256 MiB` locally, where we can afford it).
 
-**If E2EE is adopted (PQ-2):** a workspace key wrapped per-member with X25519 sealed boxes,
-rooted in a user key derived from a recovery phrase. The server then never sees plaintext —
-and loses the ability to search, thumbnail, convert or run RAG. This is why it is a product
-decision, not a security toggle.
+---
+
+## 5A. E2EE key management (`adr/0002` decision 1)
+
+**E2EE is a v1.0 property. The server holds no key that can decrypt user content.**
+
+The cryptography here is the easy part — libsodium does it. **The hard part is key
+distribution across devices and what happens when a device is lost**, and that is where this
+section spends its length. Anything written here that sounds like hand-waving should be
+treated as an unresolved design item, not as a decision.
+
+### 5A.1 Extended key hierarchy
+
+```
+RECOVERY SECRET  (32 B, generated client-side, never transmitted)
+  ├─ presented to the user as a 24-word BIP-39-style phrase, shown ONCE
+  └─ HKDF ──► USER ROOT KEY (URK)
+                │
+                ├── URK-pub (X25519)  ── published to the server (public, by design)
+                │
+                ├── wraps ──► WORKSPACE KEY (WSK, one per workspace, symmetric)
+                │               └── HKDF(WSK, doc_id) ──► DOCUMENT KEY
+                │                     ├─ seals CRDT ops + snapshots (sync-architecture §10)
+                │                     └─ HKDF(DocKey, blob_id) ──► per-file key
+                │                           └─ chunked XChaCha20-Poly1305 (§5)
+                │
+                └── wrapped per device ──► DEVICE KEY BUNDLE
+                                            stored server-side as OPAQUE CIPHERTEXT
+Per device, as before (§5):
+  Device Identity Key (Ed25519)   — signs mutations; non-exportable; Keystore/Enclave
+  Device Wrapping Key  (X25519)   — receives sealed key material; non-exportable
+  Database Key                    — SQLCipher; local only; never leaves the device
+```
+
+**Key properties, and the reason each exists:**
+
+- **The URK never touches the server.** Only `URK-pub` does. The server can therefore help
+  devices find each other without ever being able to decrypt anything they exchange.
+- **Per-document keys are derived, not stored.** `HKDF(WSK, doc_id)` means one wrapped key
+  per workspace, not one per document. Selective sharing of a single document requires
+  wrapping that derived key separately — which is why document-level sharing to a
+  non-workspace-member is **out of scope at v1.0** (§5A.6).
+- **The database key is local-only and unrelated to the URK.** Restoring a device backup
+  therefore cannot resurrect a decryptable database (T-203 holds unchanged).
+
+### 5A.2 Adding a device — the key exchange
+
+The server mediates but cannot read. Three mechanisms, in preference order:
+
+**(1) Proximity enrolment (preferred).** The new device generates its X25519 wrapping
+keypair in the Keystore/Enclave and displays its public key as a QR code plus a short
+numeric code. An **already-enrolled device** scans it, verifies the short code out-of-band
+(the user reads it aloud / compares on screen — this is the step that defeats a
+server-substituted key), seals the workspace keys to the new device's public key
+(`crypto_box_seal`), and uploads the sealed bundle. The server stores and forwards opaque
+bytes.
+
+> The out-of-band short-code comparison is **not optional**. Without it, a malicious server
+> substitutes its own public key for the new device's and receives the workspace keys. This
+> is the single most important user-facing step in the whole E2EE design, and it is the one
+> most likely to be cut for onboarding-funnel reasons. **It must not be.**
+
+**(2) Recovery-phrase enrolment.** The user enters the 24-word phrase on the new device,
+which re-derives the URK and unwraps the workspace keys directly from the server-stored
+ciphertext. No other device needs to be present or online. This is the *only* mechanism that
+works when the user has exactly one device and loses it.
+
+**(3) Provider-assisted enrolment — deliberately NOT built at v1.0.** See §5A.4.
+
+**Enrolment is visible.** Every device addition notifies every other enrolled device, names
+the device, and is written to the audit log. A user who did not add a device must find out
+immediately. Enrolment requires step-up re-authentication (§4).
+
+### 5A.3 Key rotation with multiple devices
+
+Rotation is where multi-device E2EE designs typically break, because a device that is
+offline across a rotation must not be silently locked out, and a *revoked* device must not
+silently retain access.
+
+**Rotation events and what each does:**
+
+| Event | Action |
+|---|---|
+| Device revoked / lost | **Rotate the WSK.** Re-wrap to all *remaining* devices. Write a new snapshot under the new document keys (`sync-architecture.md` §10.3), then prune superseded updates. |
+| User password change | Rotates the **DEK-wrap key only**. The URK is unaffected — it is rooted in the recovery secret, not the password. |
+| Recovery phrase regenerated | Re-derive the URK; re-wrap every WSK; re-wrap every device bundle. Expensive; user-initiated only. |
+| Routine/scheduled rotation | **Not done at v1.0.** Rotation without a triggering event adds a failure mode and buys little. Stated rather than silently omitted. |
+
+**The forward-secrecy limit, stated plainly.** A revoked device still holds every byte it
+already synced, and it holds the *old* WSK. Rotation prevents it decrypting **future**
+content. It does **not** retroactively protect past content. Presenting "remove device" as
+if it erased that device's copy would be dishonest; the UI must say "this device will not
+receive new changes" and not imply more.
+
+**The offline-device problem.** A device offline across a rotation cannot decrypt anything
+written after it. On reconnect it fetches its new sealed bundle (wrapped to its unchanged
+X25519 public key) and catches up. This works because rotation re-wraps to *public* keys and
+needs no interaction with the offline device. **But if that device was revoked while offline,
+it never receives a new bundle — which is exactly correct, and is why revocation must rotate
+rather than merely de-list.**
+
+**The lazy-rotation trap, called out because it is the tempting shortcut:** "mark the device
+revoked server-side and skip the re-encryption" leaves every future document encrypted under
+a key the revoked device still holds. If it retains any read access — a leaked token, a
+sync endpoint that fails open, a backup — it reads everything written afterwards. Revocation
+without rotation is not revocation.
+
+### 5A.4 Recovery when a device is lost — the genuinely hard problem
+
+**There is no solution that is simultaneously (a) zero-knowledge, (b) survivable when the
+user forgets everything, and (c) usable by a non-technical person. Pick two.** Anyone
+claiming otherwise is either escrowing a key or losing users' data. What follows is which
+two we pick and what we give up.
+
+**The options, with what each actually costs:**
+
+| Option | Zero-knowledge | Survives total user amnesia | Usability | Verdict |
+|---|---|---|---|---|
+| **A. Recovery phrase only** | ✅ | ❌ — lose the phrase, lose the data, permanently | Poor: users lose phrases at scale | **Ship as the baseline.** |
+| **B. PIN + rate-limited HSM/enclave escrow** (Signal SVR / iCloud Keychain model) | ~ Reduces to trusting the enclave and the attempt counter | ✅ if the PIN is remembered | Good | **Evaluate for v1.1.** See below. |
+| **C. Server escrow of the URK** | ❌ | ✅ | Excellent | **Blocked.** It is not E2EE. Never ship. |
+| **D. Social / guardian recovery (M-of-N shares)** | ✅ | ✅ if guardians persist | Poor for consumers; good for teams | **Out of scope at v1.0.** |
+| **E. Platform keychain sync** (iCloud Keychain / Google Block Store) | Delegated to the platform | Partly | Excellent, but single-ecosystem | **Ship as a convenience layer, never as the only copy.** |
+
+**What the real-world designs actually do**, because this is worth learning from rather than
+re-deriving:
+
+- **Signal's SVR** stores a client secret server-side under a low-entropy PIN, and makes that
+  safe by **hard-limiting guess attempts inside an enclave** with strongly-consistent
+  replicated state for the guess counter (SVR2 uses in-memory Raft). SVR3 goes further and
+  splits trust across **three enclave types from three vendors on three clouds** (Intel SGX /
+  Azure, AMD SEV-SNP / GCP, Nitro / AWS), so compromising two is not enough. And it still
+  concedes the core limit: **a forgotten PIN is unrecoverable**, mitigated only by
+  periodically re-prompting the user so the PIN stays in memory.
+- **Apple's iCloud Keychain escrow** guards records in **HSM clusters**, proves PIN knowledge
+  via **SRP** so the code never reaches Apple, allows **10 attempts**, and then **destroys
+  the escrow record** — deliberately sacrificing the data rather than allowing brute force.
+
+Both are multi-year infrastructure projects. Neither is a v1.0 feature for this product, and
+pretending otherwise would be the kind of estimate this project has tried to avoid.
+
+**v1.0 position:**
+
+1. **Recovery phrase (option A) is the root of trust.** Generated client-side, shown once,
+   with a mandatory verification step (re-enter N random words) before the workspace is
+   usable. No "remind me later" — the funnel cost is real and is accepted.
+2. **Platform keychain (option E) as a convenience copy**, opt-in, clearly labelled as
+   "stored by Apple/Google, protected by your device passcode", never presented as
+   equivalent to the phrase.
+3. **Multiple enrolled devices are the practical recovery mechanism.** Two devices means
+   losing one is an inconvenience, not a catastrophe. The product should actively push users
+   toward a second device, and warn — persistently and unmissably — while only one exists.
+4. **The single-device, no-phrase, no-keychain user is unrecoverable, and we say so before
+   it happens, not after.** This is accepted risk 8 (§14). It is the direct price of E2EE and
+   it must appear in onboarding, in settings, and in the privacy policy.
+5. **Support cannot help.** There is no back door, no "verify your identity and we'll
+   restore it". Support processes, training and canned responses must be written on that
+   basis **before launch** — this is an operational deliverable, not just an engineering one.
+
+**Design items that must be settled before Phase 12 coding** (see SPIKE_SUMMARY open
+questions): the exact phrase encoding and wordlist; whether the platform-keychain copy stores
+the URK or a wrapped URK; and whether option B is committed for v1.1 (which would change the
+v1.0 data model, because the escrow record's shape must exist from the start to avoid a
+migration).
+
+### 5A.5 What E2EE does **not** protect
+
+Stated here so the privacy policy can be drafted from it honestly:
+
+- **Metadata.** The server learns `doc_id`, `device_id`, per-device counters, ciphertext
+  sizes and timing — i.e. **who edits what, when, and roughly how much**
+  (`sync-architecture.md` §10.2). Accepted risk 6.
+- **A compromised client.** E2EE protects against a breached server, not against malware on
+  an unlocked device (T-202, unchanged and still High).
+- **Consented cloud AI egress.** Plaintext sent under §13.2 of `ai-architecture.md` is
+  outside the encryption boundary by the user's explicit decision. That is the *point* of the
+  consent flow, and it must be presented as an exception, never as covered.
+- **Content a user exports or shares by other means.**
+
+### 5A.6 Explicitly out of scope at v1.0
+
+- Cross-account document sharing with independent keys (requires per-document key wrapping
+  and a membership-change protocol — this is most of what makes Phase 17 expensive).
+- Server-side full-text search, thumbnailing, conversion or RAG (`sync-architecture.md` §10.4).
+- Post-quantum key exchange. X25519 only. Revisit when libsodium ships a stable hybrid KEM.
+- Key transparency / auditable key directories (the real defence against server key
+  substitution at scale; §5A.2's out-of-band code is the v1.0 substitute).
 
 ## 6. Encryption in transit
 
@@ -292,10 +477,23 @@ otherwise.
 1. **Parsers share the app address space on mobile.** Process isolation is unavailable on iOS.
    (R-02)
 2. **Rooted/jailbroken devices are not defended against.** (T-202)
-3. **Without E2EE, a server breach exposes content.** Pending PQ-2. (R-03)
+3. ~~Without E2EE, a server breach exposes content.~~ **Resolved by `adr/0002` decision 1.**
+   E2EE ships at v1.0; a server breach yields ciphertext and metadata. (R-03 downgraded.)
 4. **Prompt injection has no complete mitigation.** We reduce blast radius; we do not eliminate
    it. (R-05)
-5. **Cloud AI providers are trusted contractually, not technically.** (T-403)
-6. **Metadata leaks to the server even under E2EE** — sizes, timing, workspace structure.
+5. **Cloud AI providers are trusted contractually, not technically.** (T-403) Under E2EE this
+   is now a *user-consented exception* to the encryption boundary rather than an ambient
+   condition (`ai-architecture.md` §13.2) — which is better, but not zero.
+6. **Metadata leaks to the server even under E2EE** — `doc_id`, `device_id`, per-device
+   counters, sizes, timing. Who edits what and when is visible. (§5A.5)
 7. **Availability of local-only data depends on the user's own backups.** If a user disables
    sync and loses the device, the data is gone. This must be said clearly in the UI, not buried.
+8. **Key loss is unrecoverable, by design.** A single-device user who loses the device and has
+   neither the recovery phrase nor a platform-keychain copy has lost the data permanently.
+   Support cannot help. There is no back door. **This is the direct price of decision 3 in the
+   options table (§5A.4), it is not a bug, and it must be stated before it happens** — in
+   onboarding, in settings, and in the privacy policy. (New)
+9. **Revocation is not retroactive.** A revoked device keeps everything it already synced.
+   Rotation protects future content only. (§5A.3)
+10. **No key transparency at v1.0.** A malicious server can attempt key substitution at
+    enrolment; the only defence is the user performing the out-of-band code check. (T-309)
