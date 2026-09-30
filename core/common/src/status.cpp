@@ -35,6 +35,16 @@ const char* status_code(Status s) noexcept {
         case Status::FilePathInvalid: return "FILE_PATH_INVALID";
         case Status::FileOpenFailed:  return "FILE_OPEN_FAILED";
         case Status::FileReadFailed:  return "FILE_READ_FAILED";
+
+        case Status::PdfMalformed:           return "PDF_MALFORMED";
+        case Status::PdfPasswordRequired:    return "PDF_PASSWORD_REQUIRED";
+        case Status::PdfSecurityUnsupported: return "PDF_SECURITY_UNSUPPORTED";
+        case Status::PdfPageNotFound:        return "PDF_PAGE_NOT_FOUND";
+        case Status::PdfPageLoadFailed:      return "PDF_PAGE_LOAD_FAILED";
+        case Status::PdfRenderFailed:        return "PDF_RENDER_FAILED";
+        case Status::PdfRenderSizeInvalid:   return "PDF_RENDER_SIZE_INVALID";
+        case Status::PdfBufferTooSmall:      return "PDF_BUFFER_TOO_SMALL";
+        case Status::PdfNotOpen:             return "PDF_NOT_OPEN";
     }
     // Reached only if a caller casts a bogus integer into Status. We do not
     // trust that it cannot happen just because the enum is closed.
@@ -94,13 +104,32 @@ const char* status_message(Status s) noexcept {
             return "The page already holds the maximum allowed number of blocks.";
 
         case Status::FileEmpty:
-            return "The file or buffer contains no bytes, so nothing can be detected.";
+            return "The file or buffer contains no bytes, so there is nothing to work on.";
         case Status::FilePathInvalid:
             return "The file path was empty or contained an embedded NUL byte.";
         case Status::FileOpenFailed:
             return "The file could not be opened.";
         case Status::FileReadFailed:
             return "Reading the file failed before all requested bytes were available.";
+
+        case Status::PdfMalformed:
+            return "The bytes are not a PDF, or the PDF is damaged beyond recovery.";
+        case Status::PdfPasswordRequired:
+            return "The PDF is encrypted and the supplied password was missing or wrong.";
+        case Status::PdfSecurityUnsupported:
+            return "The PDF uses a security handler that is not supported.";
+        case Status::PdfPageNotFound:
+            return "The requested page index is outside the document's page range.";
+        case Status::PdfPageLoadFailed:
+            return "The page exists but could not be loaded.";
+        case Status::PdfRenderFailed:
+            return "Rendering the page into the supplied buffer failed.";
+        case Status::PdfRenderSizeInvalid:
+            return "The requested render width, height or stride is not usable.";
+        case Status::PdfBufferTooSmall:
+            return "The supplied pixel buffer is too small for the requested render size.";
+        case Status::PdfNotOpen:
+            return "No PDF document is open on this handle.";
     }
     return "Unrecognised status code.";
 }

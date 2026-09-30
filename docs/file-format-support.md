@@ -68,10 +68,50 @@ Platform columns mean *"available on that platform at v1.0"*. A format can be �
 
 | FORMAT | VIEW | EDIT | CREATE | CONVERT | OCR | ANNOTATION | OFFLINE | ANDROID | IOS | DESKTOP | WEB | LICENCE | KNOWN LIMITATIONS |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| PDF (1.0–2.0) | ✔ | ✔ | ✔ | ✔ → images/TXT/HTML; ◐ → DOCX | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ◐ | PDFium (BSD-3) + QPDF (Apache-2.0) | See §5.1. |
+| PDF (1.0–2.0) | ✔ (partly real — §5.0) | ✔ | ✔ | ✔ → images/TXT/HTML; ◐ → DOCX | ✔ | ✔ | ✔ | ✔ desktop only today | ✔ desktop only today | ✔ macOS-arm64 today | ◐ | PDFium (BSD-3) + QPDF (Apache-2.0) | **This row is the v1.0 TARGET.** §5.0 says what exists today; limitations are in §5.1. |
 | PDF/A (1b/2b/3b) | ✔ (as PDF) | ✔ | ◐ TBD | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ◐ | as above | **We will not claim PDF/A output conformance until validated by an independent checker in CI** (e.g. veraPDF). Reading a PDF/A file works — it is just a PDF. Producing a *conformant* one requires font embedding, colour-profile and metadata guarantees we have not yet built. Currently: **TBD / not claimed.** |
 | PDF, encrypted | ✔ w/ password | ✔ | — | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ◐ | QPDF | Supports standard security handler R2–R6 (RC4-40/128, AESV2-128, AESV3-256). **Custom/proprietary security handlers and DRM (e.g. Adobe LiveCycle rights management) are NOT supported** and never will be. |
 | PDF with XFA forms | ◐ | ✖ | — | ◐ | ◐ | ◐ | ✔ | ◐ | ◐ | ◐ | ✖ | PDFium (non-XFA build) | **NOT IMPLEMENTED.** XFA is rendered only via the document's fallback static page content, which for XFA-only documents is usually a "please open in Acrobat" notice. We display that honestly rather than pretending. |
+
+### 5.0 PDF: what is actually implemented today (2026-09-30)
+
+The table above is the v1.0 target. This subsection is the current state, and the two must
+not be confused — spec §5 forbids claiming a feature is complete unless it is implemented
+and tested.
+
+**Implemented and tested** (`pdf-engine/reader`, 22 unit tests, green under ASan+UBSan on
+macOS-arm64):
+
+| Capability | Status |
+|---|---|
+| Open a PDF **from an in-memory buffer** (no temp file, no path API) | ✔ real |
+| Page count | ✔ real |
+| Per-page size in points, from the page's own MediaBox | ✔ real |
+| Render a page into a **caller-owned RGBA8888 buffer**, arbitrary pixel size, padded strides supported, zero copies (SP-5 F-2) | ✔ real |
+| Defined, non-crashing `uapp::Status` for empty / truncated / corrupt / non-PDF input | ✔ real |
+| Password parameter plumbed through | ◐ accepted and validated; **no encrypted-PDF test fixture exists yet**, so "opens an encrypted PDF" is unverified |
+
+**NOT IMPLEMENTED** — absent, not stubbed: page navigation state, search, zoom, thumbnails,
+merge, split, extract/reorder/delete/rotate/crop pages, compress, metadata editing,
+watermarks, password protection and encryption (writing), annotation of every kind,
+forms and form filling, redaction, digital signatures, PDF creation, image-to-PDF,
+OCR-to-PDF, and PDF-to-image as a file-producing operation. QPDF is not vendored or linked.
+Annotations are not even *rendered* (`FPDF_ANNOT` is deliberately unset).
+
+**The dependency is a bootstrap, and this is the most important line in this subsection.**
+PDFium is a **prebuilt binary** (bblanchon/pdfium-binaries `chromium/8076`, pinned by
+SHA-256 — `third_party/pdfium/`), for **macOS-arm64 only**, linked **dynamically**.
+`spikes/SP-1-findings.md` §5 explicitly rejects the prebuilt-vendor route for production in
+favour of a hermetic from-source build in our own CI. That build does not exist. Therefore:
+
+- **Android and iOS PDF support is NOT IMPLEMENTED** — no mobile artefact is vendored, and
+  SP-1's real open question (revised criterion 2: does `ios_deployment_target = "16.0"`
+  build and render?) is untouched.
+- The §7.8 licence inventory is still owed, and the AGG residual risk stays open
+  (`THIRD_PARTY_NOTICES` section 0).
+- **There is no PDF fuzz target yet**, which §29 requires and `testing-strategy.md` §6 makes
+  a merge gate for parsers. The malformed-input cases in the unit suite are a floor, not a
+  substitute.
 
 ### 5.1 PDF known limitations (detail)
 
@@ -338,6 +378,20 @@ confirmed and recorded in `THIRD_PARTY_NOTICES`:
 **Action item (blocking Phase 5):** SP-1 must produce a machine-generated inventory of every
 licence in the pinned PDFium tree, checked into the repo, and that inventory becomes the basis
 of the PDF section of `THIRD_PARTY_NOTICES`.
+
+**Status 2026-09-30 — partially, and provisionally, evidenced.** `pdf-engine/reader` now
+links a *prebuilt* PDFium (`third_party/pdfium/`, bootstrap — see §5.0). That archive ships
+its own `licenses/` directory, which has been preserved at `third_party/pdfium/licenses/`
+and covers every component in the table above except Skia, V8 and XFA — all three absent,
+as the recorded `args.gn` confirms (`pdf_enable_v8=false`, `pdf_enable_xfa=false`,
+`pdf_use_skia` unset). `agg23.txt` in that set declares **AGG 2.3 with the permissive
+grant**, which is consistent with what this table expected.
+
+That is evidence, **not the action item.** It is the distributor's account of a tree we did
+not build, so it is not a `gn desc`-derived inventory of the code we ship, and it does not
+answer whether AGG 2.3's terse grant is acceptable for static linking into a closed-source
+App Store binary — a counsel question, not an SPDX lookup. **AGG stays open**, and the
+action item above stays blocking. See `THIRD_PARTY_NOTICES` section 0.
 
 **SP-1 outcome (`spikes/SP-1-findings.md`):** PDFium is built **from pinned source with
 upstream's own GN/depot_tools toolchain, in a hermetic container, in our CI**, and consumed

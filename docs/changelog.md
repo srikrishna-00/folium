@@ -12,6 +12,71 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `pdf-engine/reader`: PDF viewing bootstrap on a vendored PDFium (spec §11)
+
+**Status: BOOTSTRAP, not the shipping arrangement.** This is the open / page-count /
+page-size / render-to-caller-buffer slice of spec §11 (viewing only — no editing, merge/split,
+forms, annotation, or signatures), built against a **prebuilt** PDFium binary so the reader
+wrapper's own logic could be written and tested now, while the real answer SP-1 recommended —
+a hermetic from-source build producing our own static archive for every target platform — is
+still owed before this ships. Nothing here should be read as "PDF support: done."
+
+- **`third_party/pdfium/`** — PDFium 156.0.8076.0 (`chromium/8076`) from
+  `bblanchon/pdfium-binaries`, pinned by tag **and** SHA-256 (upstream ships no release
+  tarballs or semver tags, so the tag alone does not identify the bytes). `fetch_pdfium.sh`
+  downloads and verifies it; the binary itself is `.gitignore`d, not committed, and is only
+  fetched for `mac-arm64` — `android-arm64`/`ios-arm64` are deliberately absent so this cannot
+  be mistaken for a mobile solution. Build args cross-checked against `args.gn` in the archive:
+  `pdf_enable_v8=false`, `pdf_enable_xfa=false`, `pdf_use_partition_alloc=false`, matching
+  SP-1's findings; AGG (not Skia) confirmed as the rasterizer via `licenses/agg23.txt`.
+- **Deviation from SP-1, recorded rather than hidden**: this release ships `libpdfium.dylib`
+  (shared), not a static archive — no `pdf_is_complete_lib=true` variant exists for macOS in
+  this release. The CMake target is `IMPORTED SHARED`, not `IMPORTED STATIC`; the *interface*
+  SP-1 asked for (consumed via an `IMPORTED` CMake target) is honoured, the artefact type
+  changes once the hermetic build produces our own archive.
+- **`CMakeLists.txt`**: `UAPP_ENABLE_PDF` tristate (`AUTO`/`ON`/`OFF`). `AUTO` builds
+  `pdf-engine/` iff a vendored PDFium is found and says why not otherwise; `ON` fails configure
+  outright if it's missing, rather than silently dropping the PDF tests from a "green" build.
+- **`pdf-engine/reader/`**: buffer-first (not just path-first) open, matching the file-engine's
+  design; page count; per-page `MediaBox` dimensions; render into a **caller-owned** RGBA8888
+  buffer (zero-copy per SP-5 — the wrapper writes into memory the caller supplies, it does not
+  allocate and hand back a copy). `FPDF_InitLibrary`/`FPDF_DestroyLibrary` lifecycle wrapped in
+  a refcounted `Library` so it is safe across multiple `Document`s and multiple test runs in
+  one process.
+- **9 new `Status` codes (700-708)**, deliberately coarse: PDFium's own `FPDF_GetLastError()`
+  distinguishes about six failure classes, so finer-grained codes here would be invented, not
+  real. `core/capi`'s exhaustive `to_c_status` switch extended to list-and-map all 9 to
+  `UAPP_STATUS_UNEXPECTED` (no new ABI constant minted — same pattern as the blocks and
+  file-engine commits, for the same reason: nothing reachable through the C ABI can produce
+  one of these yet).
+- **Licensing**: verified against the files actually inside the fetched archive, not assumed.
+  PDFium itself is BSD-3-Clause (`licenses/pdfium.txt`), matching `file-format-support.md`'s
+  existing "ADOPT" row. AGG 2.3 (`licenses/agg23.txt`) is the permissive pre-2.5 line, not the
+  GPL 2.5+ line — evidence, not clearance; the residual risk is carried forward in
+  `THIRD_PARTY_NOTICES`, not resolved here. The distributor's own build scripts are MIT.
+  11 further bundled third-party notices (abseil, freetype, icu, libjpeg_turbo, zlib, ...)
+  copied into `third_party/pdfium/licenses/` and indexed in `THIRD_PARTY_NOTICES`.
+
+**Tests (real, 22 assertions, `uapp.pdf.read`/`uapp.pdf.render`/`uapp.pdf.malformed`, ctest
+12/12 including the 9 pre-existing suites unchanged)**: open a valid two-page PDF from a
+buffer; correct per-page `MediaBox`; move semantics; idempotent close; `Library` refcounting
+returns to zero; render writes real (non-blank) pixels into the caller's buffer; **a padded
+stride is honoured and the write stays inside the buffer bounds** (the fix for a real bug
+found mid-development: PDFium requires a 4-byte-aligned stride, and an unaligned caller-chosen
+stride was not being rejected before this); repeated renders over the same buffer agree; a
+genuinely blank page renders as background, not uninitialized memory; empty/null/truncated/
+non-PDF/malformed-xref input all produce defined `Status` errors, never a crash; buffer-size
+arithmetic cannot be made to overflow; a password containing an embedded NUL is rejected
+outright rather than silently truncated at the NUL.
+
+**What is still owed before this leaves bootstrap status** (see
+`third_party/pdfium/README.md`): the hermetic from-source build SP-1 actually recommended, for
+every real target platform including Android/iOS; resolution of the AGG-version residual risk
+as a documented legal call, not just a flagged one; a fuzz target for the PDF parsing path
+(spec §29 names the PDF parser first in its required-fuzz-targets list — `file-engine/
+detection` has one, `pdf-engine/reader` does not yet); everything else in spec §11 beyond
+viewing (edit, merge/split, forms, annotation, signatures, PDF/A, watermarks, redaction).
+
 ### Added — `fuzz_detect`: a real libFuzzer target over `file-engine/detection` (spec §29)
 
 Closes the gate the `file-engine/detection` entry below left open (`testing-strategy.md` §6:

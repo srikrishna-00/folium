@@ -132,3 +132,47 @@ add_test(NAME uapp.capi.slice    COMMAND uapp_capi_tests "slice:")
 add_test(NAME uapp.capi.boundary COMMAND uapp_capi_tests "boundary:")
 
 set_tests_properties(uapp.capi.slice uapp.capi.boundary PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
+# pdf-engine/reader — spec section 11, the viewing slice only.
+#
+# Conditional, and that is the point of the condition: PDF support depends on
+# a vendored third-party binary (third_party/pdfium) that a fresh clone does
+# not have. With it absent, UAPP_PDF_ENABLED is FALSE, this block does not
+# execute, and `ctest` runs exactly the suite it ran before pdf-engine
+# existed. No skipped-test placeholder is registered, because a test that
+# reports "skipped" for a module that was never compiled is a test result
+# about nothing.
+#
+# A FIFTH separate executable. It links ONLY uapp::pdf_reader, which links
+# uapp::core_common and (privately) uapp::pdfium — so it cannot reach SQLite,
+# core/notes, core/blocks or file-engine/detection, and "the PDF reader is
+# bytes in, pixels out, with no storage and no document model behind it" is
+# checked by the link line rather than by review.
+#
+# It also proves the header boundary: this file includes only
+# uapp/pdf/document.h and never a PDFium header, so if FPDF_* ever leaked
+# into the public interface, this target would need an include path it has
+# not been given and the build would fail.
+#
+# Three CTest entries over one binary, split by name filter, because the
+# three failure modes have three different meanings: "the PDF API is wrong",
+# "the pixels are wrong", and "a hostile file got through".
+# ---------------------------------------------------------------------------
+if(UAPP_PDF_ENABLED)
+    add_executable(uapp_pdf_tests
+        support/test_main.cpp
+        pdf_engine/pdf_reader_test.cpp)
+
+    target_include_directories(uapp_pdf_tests PRIVATE support pdf_engine)
+
+    target_link_libraries(uapp_pdf_tests
+        PRIVATE uapp::pdf_reader uapp::compiler_options)
+
+    add_test(NAME uapp.pdf.read      COMMAND uapp_pdf_tests "pdf.read")
+    add_test(NAME uapp.pdf.render    COMMAND uapp_pdf_tests "pdf.render")
+    add_test(NAME uapp.pdf.malformed COMMAND uapp_pdf_tests "pdf.malformed")
+
+    set_tests_properties(uapp.pdf.read uapp.pdf.render uapp.pdf.malformed
+                         PROPERTIES TIMEOUT 120)
+endif()

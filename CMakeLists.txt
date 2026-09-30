@@ -70,6 +70,29 @@ if(UAPP_ENABLE_FUZZING)
     set(uapp_aux_default OFF)
 endif()
 
+# --- PDF (spec section 11) -------------------------------------------------
+# UAPP_ENABLE_PDF is a TRISTATE spelled as a string rather than an option(),
+# because the three cases genuinely differ and collapsing them loses
+# information:
+#
+#   AUTO (default) — build pdf-engine/ iff a vendored PDFium is present.
+#                    Someone who has not run third_party/pdfium/fetch_pdfium.sh
+#                    gets exactly the build they had before this module
+#                    existed, plus one STATUS line saying why PDF is off.
+#                    Nothing they rely on breaks and nothing pretends PDF works.
+#   ON             — build it, and FAIL CONFIGURE if PDFium is missing. An
+#                    explicit request must never be silently downgraded: CI
+#                    passes ON so that a broken vendor step is a red build,
+#                    not a green build with the PDF tests quietly absent.
+#   OFF            — do not build it even if PDFium is vendored.
+#
+# The dependency is a PREBUILT binary pinned by SHA-256 (third_party/pdfium),
+# NOT the hermetic from-source build docs/spikes/SP-1-findings.md §5 requires
+# before shipping. See third_party/pdfium/README.md, "What is still owed".
+set(UAPP_ENABLE_PDF "AUTO" CACHE STRING
+    "Build pdf-engine/ against the vendored PDFium: ON, OFF or AUTO (detect)")
+set_property(CACHE UAPP_ENABLE_PDF PROPERTY STRINGS AUTO ON OFF)
+
 option(UAPP_BUILD_TESTS       "Build unit tests"                         ${uapp_aux_default})
 option(UAPP_BUILD_TOOLS       "Build developer CLI / harness executables" ${uapp_aux_default})
 option(UAPP_ENABLE_SANITIZERS "Build with Address+UB sanitizers"         OFF)
@@ -104,6 +127,35 @@ endif()
 # ABI composition root: nothing in core/capi references it yet.
 add_subdirectory(file-engine)
 
+# --- pdf-engine/ — spec section 11, VIEWING ONLY ---------------------------
+# Resolve the tristate into UAPP_PDF_ENABLED (a plain bool the rest of the
+# build and tests/ can branch on).
+#
+# Skipped under UAPP_ENABLE_FUZZING for the same reason storage is: the fuzz
+# configuration builds the one library under test and its harness. There is
+# no PDF fuzz target yet — spec §29 names the PDF parser first in its list
+# and that gap is recorded in docs/changelog.md rather than hidden behind a
+# switch that looks like it covers it.
+set(UAPP_PDF_ENABLED FALSE)
+if(NOT UAPP_ENABLE_FUZZING AND NOT UAPP_ENABLE_PDF STREQUAL "OFF")
+    include(cmake/UappPdfium.cmake)
+
+    if(UAPP_PDFIUM_FOUND)
+        set(UAPP_PDF_ENABLED TRUE)
+    elseif(UAPP_ENABLE_PDF STREQUAL "ON")
+        message(FATAL_ERROR
+            "uapp: UAPP_ENABLE_PDF=ON but no vendored PDFium was found.\n"
+            "  Reason: ${UAPP_PDFIUM_REASON}\n"
+            "  Vendor the pinned prebuilt (bootstrap — see third_party/pdfium/README.md):\n"
+            "      third_party/pdfium/fetch_pdfium.sh\n"
+            "  Or configure with -DUAPP_ENABLE_PDF=OFF to build without PDF support.")
+    endif()
+endif()
+
+if(UAPP_PDF_ENABLED)
+    add_subdirectory(pdf-engine)
+endif()
+
 # core/capi is added HERE rather than from core/CMakeLists.txt, and the order
 # is load-bearing: libuapp_capi is the composition root that binds the abstract
 # NoteStore port to the concrete SQLite adapter, so uapp::storage_sqlite must
@@ -135,3 +187,13 @@ message(STATUS "uapp: tools               = ${UAPP_BUILD_TOOLS}")
 message(STATUS "uapp: sanitizers          = ${UAPP_ENABLE_SANITIZERS}")
 message(STATUS "uapp: fuzzing             = ${UAPP_ENABLE_FUZZING}")
 message(STATUS "uapp: warnings-as-errors  = ${UAPP_WARNINGS_AS_ERRORS}")
+
+if(UAPP_PDF_ENABLED)
+    message(STATUS "uapp: pdf-engine          = ON  (PDFium ${UAPP_PDFIUM_VERSION}, "
+                   "${UAPP_PDFIUM_PLATFORM}, PREBUILT bootstrap — see third_party/pdfium/README.md)")
+else()
+    message(STATUS "uapp: pdf-engine          = OFF (${UAPP_ENABLE_PDF})")
+    if(UAPP_PDFIUM_REASON)
+        message(STATUS "uapp:                       ${UAPP_PDFIUM_REASON}")
+    endif()
+endif()

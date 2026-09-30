@@ -61,10 +61,34 @@ enum class Status : std::int32_t {
     // --- file engine (6xx) -------------------------------------------------
     // Detection only at this point. Parse/convert/render errors get their own
     // codes when those engines exist; they are NOT squeezed in here.
-    FileEmpty       = 600,  ///< zero bytes: nothing to detect, distinct from "no match"
+    FileEmpty       = 600,  ///< zero bytes in: nothing to work with. NOT format-specific:
+                            ///< detection and the PDF reader both answer an empty buffer
+                            ///< with this, because "no bytes" is one condition and giving
+                            ///< it two codes would make logs harder to read, not easier.
     FilePathInvalid = 601,  ///< empty path, or a path containing a NUL byte
     FileOpenFailed  = 602,  ///< the path does not exist or could not be opened
     FileReadFailed  = 603,  ///< the file opened but a read failed part-way through
+
+    // --- pdf engine (7xx) --------------------------------------------------
+    // VIEWING ONLY at this point: the open / page-count / page-size /
+    // render-to-caller-buffer slice of spec section 11. Editing, merge/split,
+    // forms, annotation, signatures and the rest of section 11 are NOT
+    // IMPLEMENTED, and codes are NOT pre-allocated for them — a code with no
+    // code path behind it is a promise this enum cannot keep.
+    //
+    // Deliberately coarse. PDFium reports document-level failure through
+    // FPDF_GetLastError() as one of six values; inventing finer distinctions
+    // than the library can actually make would be fiction.
+    PdfMalformed           = 700,  ///< not a PDF, or damaged past PDFium's recovery
+    PdfPasswordRequired    = 701,  ///< encrypted; no password given, or the wrong one
+    PdfSecurityUnsupported = 702,  ///< a security handler PDFium will not open
+    PdfPageNotFound        = 703,  ///< page index outside [0, page_count)
+    PdfPageLoadFailed      = 704,  ///< index in range, but the page object is unusable
+    PdfRenderFailed        = 705,  ///< PDFium refused the render target it was handed
+    PdfRenderSizeInvalid   = 706,  ///< non-positive, oversized, or arithmetically
+                                   ///< overflowing width / height / stride
+    PdfBufferTooSmall      = 707,  ///< the caller's pixel buffer cannot hold the request
+    PdfNotOpen             = 708,  ///< operation on a Document that holds no document
 };
 
 /// True iff the operation succeeded. Prefer `if (!uapp::is_ok(s))` over

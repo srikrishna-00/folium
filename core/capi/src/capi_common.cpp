@@ -104,6 +104,29 @@ uapp_status_t to_c_status(Status s) noexcept {
         case Status::FileOpenFailed:
         case Status::FileReadFailed:
             return UAPP_STATUS_UNEXPECTED;
+
+        // pdf-engine/reader (spec section 11, viewing only) added these, and
+        // the two paragraphs above apply unchanged. This switch is an
+        // exhaustive tripwire by design, so adding a core status without
+        // listing it here is a compile error — which is why this block
+        // exists at all, and it is the only edit pdf-engine made to core/capi.
+        //
+        // Worth restating for this group specifically: PDF is the subsystem
+        // most likely to want a rich ABI vocabulary — a viewer must tell the
+        // user "wrong password" differently from "this file is damaged" —
+        // and that is exactly why no UAPP_STATUS_* constant is minted today.
+        // The PDF ABI gets designed when there is a PDF ABI, not inferred
+        // from the first nine statuses the C++ reader happened to need.
+        case Status::PdfMalformed:
+        case Status::PdfPasswordRequired:
+        case Status::PdfSecurityUnsupported:
+        case Status::PdfPageNotFound:
+        case Status::PdfPageLoadFailed:
+        case Status::PdfRenderFailed:
+        case Status::PdfRenderSizeInvalid:
+        case Status::PdfBufferTooSmall:
+        case Status::PdfNotOpen:
+            return UAPP_STATUS_UNEXPECTED;
     }
     // A code the core added and this layer has not been taught. We must not
     // guess a meaning for it; say so honestly instead.

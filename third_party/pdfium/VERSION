@@ -1,0 +1,107 @@
+PDFium — vendored dependency pin
+================================
+
+STATUS: BOOTSTRAP (prebuilt third-party binary). NOT the shipping arrangement.
+        See README.md in this directory and docs/spikes/SP-1-findings.md §5.
+
+Upstream project   PDFium (https://pdfium.googlesource.com/pdfium/)
+Distributor        bblanchon/pdfium-binaries
+                   https://github.com/bblanchon/pdfium-binaries
+Release tag        chromium/8076
+PDFium version     156.0.8076.0
+Release date       2026-09-29T13:02:32Z
+Pinned on          2026-09-30
+
+The tag is a PDFium branch head, not a semantic version: upstream ships no
+release tarballs and no tags (SP-1 F-1). `chromium/8076` therefore identifies
+the branch the distributor built, and the SHA-256 below identifies the exact
+bytes we fetched. Both are required; neither alone is a pin.
+
+Artefacts
+---------
+Only platforms listed here may be fetched. fetch_pdfium.sh refuses any other
+platform rather than downloading something it cannot verify.
+
+  platform   asset                    size (bytes)  sha256
+  ---------  -----------------------  ------------  ------
+  mac-arm64  pdfium-mac-arm64.tgz          3487497  0d6781fe08906baff3d82c90953e519fbc4eb253fe76431e5ed53b157763b97c
+
+  URL pattern:
+    https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8076/<asset>
+
+  Verify by hand:
+    curl -fsSL -o a.tgz https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8076/pdfium-mac-arm64.tgz
+    shasum -a 256 a.tgz
+
+Only mac-arm64 is pinned because only mac-arm64 is built and tested by this
+bootstrap. android-arm64 / ios-arm64 are deliberately absent: they are the
+platforms SP-1's hermetic from-source build must produce, and adding a
+prebuilt row for them here would make the bootstrap look like a mobile
+solution. It is not one.
+
+Build configuration of the fetched artefact
+-------------------------------------------
+Taken verbatim from `args.gn` inside the archive (also copied to
+args.gn.mac-arm64 by the fetch script), and cross-checked against the arg set
+SP-1 F-4 recorded as the known-good one:
+
+    clang_use_chrome_plugins = false
+    is_component_build       = false
+    is_debug                 = false
+    pdf_enable_v8            = false      <- matches SP-1 / T-105: no PDF JavaScript
+    pdf_enable_xfa           = false      <- matches SP-1
+    pdf_is_standalone        = true
+    pdf_use_partition_alloc  = false      <- matches SP-1 F-3
+    target_cpu               = "arm64"
+    target_os                = "mac"
+    treat_warnings_as_errors = false
+
+`pdf_use_skia` is unset, i.e. the AGG rasteriser is what ships — which is what
+file-format-support.md §7.8 asked for and what SP-1 F-4 predicted. Confirmed
+independently by the presence of `licenses/agg23.txt` in the archive.
+
+DEVIATION FROM THE TASK SHAPE, recorded rather than hidden
+-----------------------------------------------------------
+This release publishes **no static archive for macOS**. Every `pdfium-mac-*`
+asset contains `lib/libpdfium.dylib` — a shared library — and there is no
+`pdf_is_complete_lib = true` variant among the mac assets (checked against the
+full asset list of chromium/8076). So the CMake target is an IMPORTED SHARED
+library, not the IMPORTED STATIC one SP-1 §5 names. The *interface* is what
+SP-1 cared about (an IMPORTED target consumed from our CMake) and that is
+honoured; STATIC returns when the hermetic build produces the archive
+ourselves. On a dev host the dylib's rpath is resolved by CMake's
+BUILD_RPATH — nothing is installed system-wide.
+
+Licensing
+---------
+Verified against the actual files in the fetched archive, not assumed:
+
+  * PDFium itself — licenses/pdfium.txt: BSD-3-Clause (Copyright 2014 The
+    PDFium Authors), followed by the full Apache-2.0 text in the same file as
+    upstream ships it. BSD-3-Clause matches file-format-support.md §7 row
+    "PDFium ... BSD-3-Clause ... ADOPT".
+  * AGG 2.3 — licenses/agg23.txt declares "Anti-Grain Geometry - Version 2.3,
+    Copyright (C) 2002-2005 Maxim Shemanarev", permissive ("permission to
+    copy, use, modify, sell and distribute ... is granted"). This is the
+    permissive 2.4-and-earlier line, NOT GPL AGG 2.5. This is evidence, not a
+    clearance — see the residual-risk note in THIRD_PARTY_NOTICES.
+  * The distributor's own wrapper (build scripts, PDFiumConfig.cmake) — MIT,
+    Copyright 2014-2025 Benoit Blanchon (licenses/LICENSE.pdfium-binaries).
+  * Bundled third-party notices shipped with the archive and copied into
+    ./licenses/: abseil, fast_float, freetype, icu, lcms, libjpeg_turbo (both
+    IJG and the .md), libopenjpeg, libpng, llvm-libc, simdutf, zlib.
+
+Re-roll procedure
+-----------------
+1. Pick a release tag from https://github.com/bblanchon/pdfium-binaries/releases
+2. Download the asset, record its SHA-256.
+3. Update PDFIUM_TAG / PDFIUM_VERSION / sha_for_platform() in fetch_pdfium.sh
+   AND the table above. Both, in the same commit.
+4. Re-run fetch_pdfium.sh; diff ./licenses against the previous set and
+   re-check THIRD_PARTY_NOTICES if anything moved (§7.8's warning that AGG
+   went permissive -> GPL between 2.4 and 2.5 is exactly this failure mode).
+5. Re-run the pdf-engine tests.
+
+This procedure is the bootstrap's stand-in for SP-1 revised criterion 6
+("a documented, scripted re-roll procedure"). It is scripted and documented,
+but it re-rolls someone else's build, which is the part still owed.

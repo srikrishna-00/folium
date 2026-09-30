@@ -1,18 +1,24 @@
 THIRD PARTY NOTICES
 ===================
 
-Status:  Phase 0 — PLANNED DEPENDENCIES ONLY
-Version: 0.0.0
-Date:    2026-09-29
+Status:  Phase 1 — ONE DEPENDENCY INTEGRATED (see SECTION 0); the rest PLANNED
+Version: 0.0.1
+Date:    2026-09-30
 
 -------------------------------------------------------------------------------
 IMPORTANT — READ BEFORE USING THIS FILE
 -------------------------------------------------------------------------------
 
-No third-party code is currently distributed with this product. No source code
-has been written. This file records the OUTCOME OF THE PHASE 0 LICENCE ANALYSIS
-(docs/file-format-support.md section 7) so that the analysis is not lost, and so
-that the notice obligations are known before integration rather than after.
+Most of this file is still the PHASE 0 LICENCE ANALYSIS
+(docs/file-format-support.md section 7): a record of what we intend to
+integrate and what each licence will oblige us to do, kept so the analysis is
+not lost and the obligations are known before integration rather than after.
+
+SECTION 0 is different. It lists dependencies whose code is ACTUALLY PRESENT
+in a build today, with licences verified against the bytes we fetched rather
+than against upstream documentation. As of this revision that is PDFium, and
+only PDFium. SQLite is linked from the platform rather than vendored (see the
+note in SECTION 0).
 
 Three rules govern this file from Phase 1 onward:
 
@@ -33,6 +39,113 @@ Three rules govern this file from Phase 1 onward:
 Distribution model assumed throughout: a closed-source commercial application,
 with a statically linked native core, distributed via the Apple App Store and
 Google Play.
+
+-------------------------------------------------------------------------------
+SECTION 0 — ACTUALLY INTEGRATED TODAY
+-------------------------------------------------------------------------------
+
+Everything in this section is present in a build that can be produced from this
+repository right now. Everything in sections 1-5 is not.
+
+  PDFium
+  ------
+  SPDX identifier ...... BSD-3-Clause
+  Version .............. 156.0.8076.0 (PDFium branch head chromium/8076)
+  Used by .............. pdf-engine/reader (spec section 11, VIEWING ONLY:
+                         open from buffer, page count, page size, render a
+                         page into a caller-owned RGBA8888 buffer)
+  Vendored at .......... third_party/pdfium/   (pin, checksum and licences)
+  Linking .............. dynamic (libpdfium.dylib) on the macOS dev host
+  Upstream ............. https://pdfium.googlesource.com/pdfium/
+
+  ** STATUS: BOOTSTRAP. This is a PREBUILT BINARY, not a build we performed. **
+
+  The artefact is release chromium/8076 of bblanchon/pdfium-binaries, asset
+  pdfium-mac-arm64.tgz, SHA-256
+
+      0d6781fe08906baff3d82c90953e519fbc4eb253fe76431e5ed53b157763b97c
+
+  fetched on 2026-09-30 from
+
+      https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8076/pdfium-mac-arm64.tgz
+
+  docs/spikes/SP-1-findings.md §5 explicitly declines the prebuilt-vendor
+  route (it is the R-12 fallback, and it carries supply-chain risk we chose
+  not to take) in favour of building PDFium ourselves from a pinned commit in
+  a hermetic CI container. THAT BUILD DOES NOT EXIST YET. This entry describes
+  the stopgap that unblocked writing the reader, and it must be replaced —
+  not merely re-pinned — before anything ships. third_party/pdfium/README.md,
+  "What is still owed", lists the six specific gaps.
+
+  Licence verification — performed against the FETCHED ARCHIVE, not against
+  upstream's website:
+
+    * third_party/pdfium/licenses/pdfium.txt is the PDFium LICENSE as shipped:
+      BSD-3-Clause ("Copyright 2014 The PDFium Authors", three-clause form
+      with the Google Inc. non-endorsement clause), followed by the full text
+      of Apache-2.0 in the same file, as upstream now ships it. The BSD-3
+      determination matches docs/file-format-support.md §7.1's ADOPT verdict.
+      The full text is reproduced at third_party/pdfium/licenses/pdfium.txt
+      and MUST be included in the product's open-source-licences screen.
+
+    * The distributor's own build scripts and PDFiumConfig.cmake are MIT
+      (Copyright 2014-2025 Benoit Blanchon) —
+      third_party/pdfium/licenses/LICENSE.pdfium-binaries. None of that code
+      is compiled into the product; only the binary it produced is used.
+
+    * Bundled third-party notices shipped inside the archive and preserved at
+      third_party/pdfium/licenses/: abseil, agg23, fast_float, freetype, icu,
+      lcms, libjpeg_turbo (both the IJG text and the .md), libopenjpeg,
+      libpng, llvm-libc, simdutf, zlib. All are permissive. Each MUST appear
+      in the licences screen.
+
+  Build configuration (verbatim from args.gn inside the archive, preserved at
+  third_party/pdfium/args.gn.mac-arm64): pdf_enable_v8 = false,
+  pdf_enable_xfa = false, pdf_use_partition_alloc = false,
+  is_component_build = false, pdf_is_standalone = true. pdf_use_skia is unset,
+  so the AGG rasteriser is what ships. This satisfies §7.8's requirements on
+  V8 (threat T-105), XFA and the renderer choice.
+
+  RESIDUAL RISK CARRIED FORWARD — AGG, NOT CLOSED
+  -----------------------------------------------
+  §7.8 and SECTION 5 of this file flag that PDFium vendors Anti-Grain Geometry
+  in third_party/agg23, that AGG 2.5 is GPL, and that only the 2.4-and-earlier
+  line is permissive — and that this MUST be confirmed against the actual
+  vendored LICENSE at the pinned commit rather than assumed.
+
+  What this integration establishes: the archive ships
+  third_party/pdfium/licenses/agg23.txt, which declares "Anti-Grain Geometry -
+  Version 2.3, Copyright (C) 2002-2005 Maxim Shemanarev" and the permissive
+  grant ("Permission to copy, use, modify, sell and distribute this software
+  is granted provided this copyright notice appears in all copies"). That is
+  the permissive line, and it is consistent with §7.8's expectation.
+
+  What it does NOT establish, and why this stays open:
+
+    1. It is the DISTRIBUTOR'S account of what is in the tree, not our own
+       reading of the tree. We did not build from source, so we have not seen
+       third_party/agg23/LICENSE at a commit we pinned.
+    2. AGG 2.3's grant is unusually terse and is not an OSI-identified
+       licence. Whether it is compatible with static linking into a
+       closed-source App Store binary is a question for counsel, not for an
+       SPDX lookup.
+    3. §7.8 requires a MACHINE-GENERATED inventory from the pinned tree
+       (gn desc). A licences/ directory copied out of someone else's tarball
+       is not that.
+
+  Therefore: AGG remains an OPEN item for counsel review before Phase 5, and
+  the hermetic build (SP-1 revised criterion 5) is what closes it. Owner: Core
+  lead. This paragraph must not be deleted when the inventory lands — it must
+  be replaced by the inventory's finding.
+
+  Not in this section, deliberately
+  ---------------------------------
+  SQLite is used by storage/sqlite but is NOT vendored: the build links the
+  platform's libsqlite3 (see cmake/FindSQLite3Fts5.cmake). It is public
+  domain, so nothing is owed in notices, and there is no third_party/ entry to
+  audit. When the amalgamation + SQLCipher are vendored for reproducible
+  mobile builds, SQLite moves into this section with a pin and a checksum
+  like everything else.
 
 -------------------------------------------------------------------------------
 SECTION 1 — APPROVED FOR INTEGRATION
