@@ -1,21 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// tests/support/test_fixtures.h — fakes and scratch files for the note tests.
+// tests/support/test_fixtures.h — fakes for the NOTE tests specifically.
 //
-// Every std::filesystem call here uses the std::error_code overload. The
-// throwing overloads would call std::terminate under -fno-exceptions, turning
-// a failed temp-directory lookup into an unexplained crash instead of a test
-// failure.
+// The port fakes here implement `notes::Clock` / `notes::IdGenerator`. The
+// generic equivalents over `uapp::Clock` / `uapp::IdSource`, and the scratch
+// directory helper, now live in common_fixtures.h so that a core/blocks test
+// does not have to link core/notes to get a temp directory.
 
 #ifndef UAPP_TESTS_SUPPORT_TEST_FIXTURES_H
 #define UAPP_TESTS_SUPPORT_TEST_FIXTURES_H
 
 #include <cstdint>
 #include <cstdio>
-#include <filesystem>
 #include <string>
-#include <system_error>
 
+#include "common_fixtures.h"  // FakeSystemClock, CountingIdSource, TempDir
 #include "uapp/notes/ports.h"
 #include "uapp/status.h"
 
@@ -62,42 +61,8 @@ private:
     bool          fail_next_ = false;
 };
 
-/// A unique scratch directory, removed on destruction.
-class TempDir final {
-public:
-    TempDir() {
-        std::error_code ec;
-        const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
-        if (ec) { return; }
-
-        static std::uint64_t counter = 0;
-        ++counter;
-        path_ = base / ("uapp-notes-test-" + std::to_string(counter) + "-" +
-                        std::to_string(static_cast<std::uint64_t>(
-                            reinterpret_cast<std::uintptr_t>(this))));
-        std::filesystem::create_directories(path_, ec);
-        if (ec) { path_.clear(); }
-    }
-
-    ~TempDir() {
-        if (path_.empty()) { return; }
-        std::error_code ec;
-        std::filesystem::remove_all(path_, ec);  // best effort; ec ignored on purpose
-    }
-
-    TempDir(const TempDir&) = delete;
-    TempDir& operator=(const TempDir&) = delete;
-
-    [[nodiscard]] bool valid() const { return !path_.empty(); }
-
-    /// Path to a file inside the scratch directory. Not created.
-    [[nodiscard]] std::string file(const char* name) const {
-        return (path_ / name).string();
-    }
-
-private:
-    std::filesystem::path path_;
-};
+// TempDir moved to common_fixtures.h (included above) -- it is not
+// note-specific and the block storage tests need it too.
 
 }  // namespace uapp::test
 

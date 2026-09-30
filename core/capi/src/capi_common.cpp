@@ -69,6 +69,28 @@ uapp_status_t to_c_status(Status s) noexcept {
         case Status::StoreReadOnly:     return UAPP_STATUS_STORE_READ_ONLY;
         case Status::SearchQueryEmpty:  return UAPP_STATUS_SEARCH_QUERY_EMPTY;
         case Status::SearchFailed:      return UAPP_STATUS_SEARCH_FAILED;
+
+        // core/blocks (spec section 14) added these codes. They are listed
+        // rather than swept into a `default:` because this exhaustive switch
+        // is exactly the mechanism that turns every future core status into a
+        // compile error here until someone decides what the ABI should say.
+        //
+        // They map to UAPP_STATUS_UNEXPECTED ON PURPOSE, and no new
+        // UAPP_STATUS_* constant is minted: the C ABI is separately versioned
+        // and its codes are permanent, while nothing reachable through this
+        // boundary can return one of them yet -- core/capi still exposes only
+        // NoteService. Minting an error vocabulary for a block ABI that does
+        // not exist would freeze a guess into a stable interface.
+        case Status::IdMalformed:
+        case Status::BlockTypeUnsupported:
+        case Status::BlockDepthExceeded:
+        case Status::BlockTextTooLarge:
+        case Status::BlockMalformed:
+        case Status::BlockPositionInvalid:
+        case Status::BlockCycleDetected:
+        case Status::PageTitleTooLong:
+        case Status::PageBlockLimitExceeded:
+            return UAPP_STATUS_UNEXPECTED;
     }
     // A code the core added and this layer has not been taught. We must not
     // guess a meaning for it; say so honestly instead.

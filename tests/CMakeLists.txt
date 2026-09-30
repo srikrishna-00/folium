@@ -16,6 +16,38 @@ target_link_libraries(uapp_notes_tests
 
 add_test(NAME uapp.notes.unit COMMAND uapp_notes_tests)
 
+# ---------------------------------------------------------------------------
+# core/blocks — the Notion-like document model (spec section 14).
+#
+# A SEPARATE executable from uapp_notes_tests, deliberately: it links
+# uapp::core_blocks and uapp::storage_sqlite and never names uapp::core_notes,
+# so "the block model does not depend on the flat note it supersedes"
+# (docs/adr/0003-page-supersedes-note.md) is a property the build graph
+# checks rather than one review has to remember. storage/sqlite does still
+# drag core_notes in transitively — that is the adapter target's business,
+# not core/blocks'.
+#
+# Two CTest entries over one binary, split by name filter, for the same
+# reason the capi tests are split: "blocks.tree failed" and
+# "blocks.store failed" mean very different things.
+# ---------------------------------------------------------------------------
+add_executable(uapp_blocks_tests
+    support/test_main.cpp
+    core/blocks_test.cpp
+    storage/block_store_test.cpp)
+
+target_include_directories(uapp_blocks_tests PRIVATE support)
+
+# uapp::storage_sqlite links uapp::core_blocks PUBLIC, so naming it again
+# here only makes the linker warn about a duplicate.
+target_link_libraries(uapp_blocks_tests
+    PRIVATE uapp::storage_sqlite uapp::compiler_options)
+
+add_test(NAME uapp.blocks.unit  COMMAND uapp_blocks_tests)
+add_test(NAME uapp.blocks.store COMMAND uapp_blocks_tests "blocks.store")
+
+set_tests_properties(uapp.blocks.unit uapp.blocks.store PROPERTIES TIMEOUT 120)
+
 # The CLI demo is the integration test: it drives the full slice against a
 # real on-disk database in a fresh directory and fails loudly at the first
 # broken step. Running it here means "the slice works end to end" is verified

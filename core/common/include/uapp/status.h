@@ -30,6 +30,7 @@ enum class Status : std::int32_t {
     NotFound        = 101,
     AlreadyExists   = 102,
     Internal        = 103,  ///< a bug in us, not in the caller's input
+    IdMalformed     = 104,  ///< an ObjectId was not 32 hexadecimal characters
 
     // --- note domain validation (2xx) ---
     NoteTitleTooLong = 200,
@@ -46,6 +47,16 @@ enum class Status : std::int32_t {
     // --- search (4xx) ---
     SearchQueryEmpty = 400,  ///< query had no indexable terms after sanitising
     SearchFailed     = 401,
+
+    // --- block / page document model (5xx) ---
+    BlockTypeUnsupported   = 500,  ///< a spec section 14 type that is NOT IMPLEMENTED yet
+    BlockDepthExceeded     = 501,  ///< nesting deeper than kMaxBlockDepth
+    BlockTextTooLarge      = 502,
+    BlockMalformed         = 503,  ///< payload violates its own type's rules
+    BlockPositionInvalid   = 504,  ///< insert/move index past the end of the sibling list
+    BlockCycleDetected     = 505,  ///< a move would make a block its own ancestor
+    PageTitleTooLong       = 506,
+    PageBlockLimitExceeded = 507,  ///< page already holds kMaxBlocksPerPage blocks
 };
 
 /// True iff the operation succeeded. Prefer `if (!uapp::is_ok(s))` over

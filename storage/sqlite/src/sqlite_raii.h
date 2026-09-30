@@ -119,10 +119,18 @@ public:
         if (value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
             return Status::InvalidArgument;
         }
+        // A default-constructed std::string_view has data() == nullptr, and
+        // sqlite3_bind_text() treats a null pointer as SQL NULL, not as the
+        // empty string. Bound to a NOT NULL column that is a constraint
+        // violation reported as SQLITE_CONSTRAINT -- i.e. "already exists" in
+        // our vocabulary, for a row that does not exist. Substitute a valid
+        // zero-length buffer so an empty value stays an empty value.
+        const char* data = value.data() != nullptr ? value.data() : "";
+
         // SQLITE_TRANSIENT: SQLite copies immediately, so `value` does not
         // have to outlive the bind. The alternative (SQLITE_STATIC) is a
         // dangling-pointer bug waiting for the first refactor.
-        const int rc = sqlite3_bind_text(stmt_, index, value.data(),
+        const int rc = sqlite3_bind_text(stmt_, index, data,
                                          static_cast<int>(value.size()),
                                          SQLITE_TRANSIENT);
         return rc == SQLITE_OK ? Status::Ok : Status::StoreWriteFailed;
@@ -140,6 +148,15 @@ public:
 
     [[nodiscard]] Status bind_int64(int index, std::int64_t value) noexcept {
         const int rc = sqlite3_bind_int64(stmt_, index, value);
+        return rc == SQLITE_OK ? Status::Ok : Status::StoreWriteFailed;
+    }
+
+    /// Bind SQL NULL. The block tree needs it: a NULL `parent_id` is how a
+    /// top-level block is represented. Note that NULL never matches `=`, so
+    /// sibling-group lookups must use `parent_id IS ?`, which SQLite defines
+    /// as null-safe equality. Getting that wrong silently returns zero rows.
+    [[nodiscard]] Status bind_null(int index) noexcept {
+        const int rc = sqlite3_bind_null(stmt_, index);
         return rc == SQLITE_OK ? Status::Ok : Status::StoreWriteFailed;
     }
 
@@ -163,6 +180,10 @@ public:
 
     [[nodiscard]] double column_double(int index) const noexcept {
         return sqlite3_column_double(stmt_, index);
+    }
+
+    [[nodiscard]] bool column_is_null(int index) const noexcept {
+        return sqlite3_column_type(stmt_, index) == SQLITE_NULL;
     }
 
     /// Copy a BLOB column into `out`, which must have room for exactly

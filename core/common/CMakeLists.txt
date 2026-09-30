@@ -1,4 +1,6 @@
 add_library(uapp_core_common STATIC
+    src/object_id.cpp
+    src/ports.cpp
     src/status.cpp)
 add_library(uapp::core_common ALIAS uapp_core_common)
 

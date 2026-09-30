@@ -10,6 +10,7 @@ const char* status_code(Status s) noexcept {
         case Status::NotFound:          return "NOT_FOUND";
         case Status::AlreadyExists:     return "ALREADY_EXISTS";
         case Status::Internal:          return "INTERNAL";
+        case Status::IdMalformed:       return "ID_MALFORMED";
         case Status::NoteTitleTooLong:  return "NOTE_TITLE_TOO_LONG";
         case Status::NoteBodyTooLarge:  return "NOTE_BODY_TOO_LARGE";
         case Status::NoteIdMalformed:   return "NOTE_ID_MALFORMED";
@@ -20,6 +21,15 @@ const char* status_code(Status s) noexcept {
         case Status::StoreReadOnly:     return "STORE_READ_ONLY";
         case Status::SearchQueryEmpty:  return "SEARCH_QUERY_EMPTY";
         case Status::SearchFailed:      return "SEARCH_FAILED";
+
+        case Status::BlockTypeUnsupported:   return "BLOCK_TYPE_UNSUPPORTED";
+        case Status::BlockDepthExceeded:     return "BLOCK_DEPTH_EXCEEDED";
+        case Status::BlockTextTooLarge:      return "BLOCK_TEXT_TOO_LARGE";
+        case Status::BlockMalformed:         return "BLOCK_MALFORMED";
+        case Status::BlockPositionInvalid:   return "BLOCK_POSITION_INVALID";
+        case Status::BlockCycleDetected:     return "BLOCK_CYCLE_DETECTED";
+        case Status::PageTitleTooLong:       return "PAGE_TITLE_TOO_LONG";
+        case Status::PageBlockLimitExceeded: return "PAGE_BLOCK_LIMIT_EXCEEDED";
     }
     // Reached only if a caller casts a bogus integer into Status. We do not
     // trust that it cannot happen just because the enum is closed.
@@ -38,6 +48,8 @@ const char* status_message(Status s) noexcept {
             return "A note with that identifier already exists.";
         case Status::Internal:
             return "An internal error occurred; this is a defect, please report it.";
+        case Status::IdMalformed:
+            return "Identifier is not 32 hexadecimal characters.";
         case Status::NoteTitleTooLong:
             return "Note title exceeds the maximum allowed length.";
         case Status::NoteBodyTooLarge:
@@ -58,6 +70,23 @@ const char* status_message(Status s) noexcept {
             return "The search query contained no searchable terms.";
         case Status::SearchFailed:
             return "The full-text search index could not answer the query.";
+
+        case Status::BlockTypeUnsupported:
+            return "That block type is recognised but not implemented in this build.";
+        case Status::BlockDepthExceeded:
+            return "Blocks are nested deeper than the maximum allowed depth.";
+        case Status::BlockTextTooLarge:
+            return "Block text exceeds the maximum allowed size.";
+        case Status::BlockMalformed:
+            return "Block content violates the rules of its own block type.";
+        case Status::BlockPositionInvalid:
+            return "The requested block position is past the end of its sibling list.";
+        case Status::BlockCycleDetected:
+            return "That move would make a block a descendant of itself.";
+        case Status::PageTitleTooLong:
+            return "Page title exceeds the maximum allowed length.";
+        case Status::PageBlockLimitExceeded:
+            return "The page already holds the maximum allowed number of blocks.";
     }
     return "Unrecognised status code.";
 }

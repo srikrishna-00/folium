@@ -5,7 +5,9 @@
 
 int main(int argc, char** argv) {
     const char* filter = (argc > 1) ? argv[1] : nullptr;
-    std::printf("running uapp note-slice tests%s%s\n",
+    // Shared by every test executable now that there is more than one, so
+    // the banner names the suite generically rather than one slice.
+    std::printf("running uapp tests%s%s\n",
                 filter != nullptr ? " matching " : "",
                 filter != nullptr ? filter : "");
     return uapp::test::run_all(filter);

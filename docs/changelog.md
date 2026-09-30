@@ -12,6 +12,165 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `core/blocks`: the real block document model (spec §14)
+
+The flat note is superseded. This implements the structure spec §14 actually asks for —
+`Workspace -> Page -> Blocks`, with blocks nested inside blocks — as the model everything
+later (backlinks, comments, mentions, block-level sync, version history) can anchor to. A
+`body` string has nothing to anchor to; a block id does.
+
+**Note vs. Page — the architectural call.** `Page` wins; `Note` is **deprecated in place, not
+deleted**, and the two coexist for exactly as long as it takes to move `core/capi`. Reasoning
+and the four-step retirement path are in **`docs/adr/0003-page-supersedes-note.md`**. The short
+version: `core/capi` is built on `NoteService`, and the C ABI is the contract the Kotlin and
+Swift bindings will be written against — churning it while the block model is one day old is
+the wrong order. `Page` is also, today, *less* capable than `Note` in one respect (no
+full-text search), so folding `Note` into it now would remove working functionality. `Note`
+becomes a page holding one paragraph block once block FTS and the block ABI exist; no id
+migration is needed, because `NoteId` was given the real 16-byte shape in the bootstrap slice.
+`core/blocks` deliberately does **not** link `core/notes` — the build graph enforces that the
+successor never acquires a dependency on what it replaces.
+
+- **`core/blocks`** (`uapp::core_blocks`) — the portable domain. Links no database library, so
+  PHASE0_SUMMARY.md H-3 stays enforced by the build graph rather than by convention.
+  - **`Block` content is a `std::variant` over typed payload structs, not a class hierarchy.**
+    Three reasons, recorded in `block.h`: a closed tagged union maps to C as
+    `{int32_t type; union {...};}` mechanically, and ADR-0001 commits us to a C99 ABI; ADR-0001
+    also bans RTTI, so a hierarchy would need a hand-rolled type tag anyway — a tagged union
+    wearing a vtable; and the type set is closed and ours, which is exactly when `std::visit`'s
+    compile-time exhaustiveness beats open polymorphism.
+  - **Eight block types with real typed fields** (no opaque strings): `paragraph`, `heading`
+    (level 1–3), `bulleted_list_item`, `numbered_list_item`, `checklist_item` (`checked` bool),
+    `code` (`language` tag), `divider`, `quote`. Numbered-list numbering is *derived* from
+    sibling position, never stored — storing it goes stale on every insert.
+  - **The variant index IS the persisted type tag.** `static_assert`s pin each alternative to
+    its `BlockType` value, so reordering the variant is a compile error instead of a silent
+    reinterpretation of every stored block.
+  - **`Page`** with id, title, timestamps and an ordered tree of blocks.
+- **Nesting is real, and depth-capped at 64** (`kMaxBlockDepth`). Every read of a block tree is
+  recursive, and the tree is user-controlled, so unbounded nesting is a stack-exhaustion DoS
+  reachable from a restored or synced document — spec §38's "validate external input" applies
+  to our own files too. The cap is enforced on **insert**, on **move** (destination depth +
+  the moved *subtree's* height, not just the block) **and on read**, so a hand-edited database
+  cannot smuggle a deeper tree past it. The two tree-measuring helpers are iterative with an
+  explicit stack: the function that decides whether a tree is safe to recurse into must not
+  recurse into it to find out.
+- **`storage/sqlite/src/sqlite_block_store.cpp`** — the relational adapter. Pages and blocks in
+  `page` + `block` tables with real columns and foreign keys, **not** a JSON blob: order,
+  nesting and per-block identity have to survive into SQL for search, backlinks and block-level
+  sync later. Same discipline as the note store — RAII `Connection`/`Statement`/`Transaction`,
+  every mutation in one all-or-nothing transaction, `Status`-based propagation, no
+  `<sqlite3.h>` in any public header, schema-version check that refuses a newer database.
+  Deleting a subtree and re-densifying positions are one statement pair inside one transaction,
+  so a half-applied move is unrepresentable.
+- **Operations** (`DocumentService`): create page, open page (full tree), rename, delete page,
+  add block at a position and nesting level, append, read block, update content (the type may
+  change; children survive), delete block, reorder, move to a new parent. Sibling positions are
+  **dense 0..n-1** after every operation, and an index past the end is `BlockPositionInvalid`
+  rather than a silent clamp — a caller working from a stale tree should be told.
+- **Delete cascades to children; it does not reparent them.** A nested bullet under a deleted
+  bullet, or the body of a deleted toggle, is bound to its parent — promoting orphans into the
+  grandparent produces a document the user did not write. It is also what
+  `database-design.md` §3.3 already specifies (`ON DELETE CASCADE` on `block.parent_id`). Undo
+  is the right answer to "I did not mean that", and is NOT IMPLEMENTED (below).
+- **`core/common` gained `ObjectId<Tag>` and the generic `Clock`/`IdSource` ports.** The
+  16-byte identifier and its hex parser now exist once instead of being re-hand-rolled per
+  domain; the phantom tag keeps `PageId` and `BlockId` distinct types at zero runtime cost
+  while staying a 16-byte standard-layout aggregate for the future C ABI. `uapp::Status` gained
+  a generic `IdMalformed` (104) and an append-only 5xx block range.
+- **`tests/`** — a **separate** `uapp_blocks_tests` binary (CTest: `uapp.blocks.unit`,
+  `uapp.blocks.store`) that links `uapp::storage_sqlite` and never names `uapp::core_notes`, so
+  ADR-0003's independence claim is checked by the linker. **36 cases**: create a page and fill
+  it with every implemented payload; **persist and reload across a real close/reopen, asserting
+  order and nesting exactly** (three top-level blocks, two children, a grandchild, parent links
+  round-tripped); positional insert; update content and change a block's type with children
+  intact; **delete cascading to a whole subtree** plus the sibling gap closing; delete page;
+  reorder (front, back, middle-to-middle); **move to a new parent with the subtree travelling
+  with it**, and back out to the top level; cycle rejection (under a descendant, and under
+  itself); **the depth guard accepting exactly 64 and rejecting the 65th**, with nothing written
+  by the failed attempt; a move refused because the *subtree* would not fit where a lone block
+  would; and error paths — block on a nonexistent page, nil ids, parent on another page,
+  position past the end, unknown block id, read-only database, entropy-source failure. Plus the
+  domain-only suite: id hex round-trip and rejection, the type table, payload validation
+  (heading level, embedded NUL, oversize, code-language control bytes) and tree validation.
+
+**Two real defects were found by these tests and fixed**, both recorded because neither is
+visible by inspection. (1) `Statement::bind_text` in the shared `sqlite_raii.h` bound **SQL
+NULL** for any empty `std::string_view`, because a default-constructed view has
+`data() == nullptr` and `sqlite3_bind_text` reads a null pointer as NULL. Against a `NOT NULL`
+column that surfaced as `SQLITE_CONSTRAINT` — reported as "already exists" for a row that did
+not exist. This was latent in the note store too. (2) The tree reassembler rejected a tree at
+*exactly* the depth limit, because it judged depth before checking whether the deepest block
+had any children at all.
+
+**Deliberate deviations from `database-design.md` §3.3**, recorded so they are not mistaken for
+oversights, both with their migration written down at the point of deviation:
+
+- **Ordering is an integer `sort_index`, not a fractional `sort_key`.** The design doc is right
+  that integer positions turn a 1-block insert into an N-row renumber, which becomes an N-block
+  *conflict* once sync exists. That cost is only paid once sync exists (Phase 13); today there
+  is one writer on one device, the renumber is the tail of one sibling list inside the same
+  transaction, and dense positions make every ordering assertion exact instead of a comparison
+  of two opaque strings. Deferred, not rejected: the migration is one `ALTER TABLE` plus a
+  single backfill pass in `sort_index` order, with no change to any identifier.
+- **Block content is in four typed columns, not a CBOR blob.** CBOR is the right answer for
+  nineteen types with disjoint fields; with the eight implemented here the whole payload space
+  is `text`/`checked`/`heading_level`/`language`. A hand-rolled codec would need its own fuzz
+  target before it could be trusted with a file off the network. `schema_ver` is present from
+  day one, and `block.h` names the trigger for the switch: the first type (`table`, `image`, …)
+  whose payload does not fit these columns.
+
+**NOT IMPLEMENTED** (declared, reasoned, and not faked):
+
+- **Eleven of the nineteen §14 block types.** `toggle`, `callout`, `table`, `image`, `video`,
+  `audio`, `file`, `equation`, `embed`, `database`, `bookmark` are enumerated in `BlockType`
+  with permanent numeric values and each returns a machine-readable reason from
+  `block_type_not_implemented_reason()` — in code, not in a comment, so the reason cannot rot
+  and a UI can show it. Summaries: `table`/`database` need the §15 property and view system
+  (explicitly a later run); `image`/`video`/`audio`/`file` need the blob store, since
+  database-design.md principle 6 forbids putting bytes in the database; `embed`/`bookmark`
+  fetch remote URLs, which breaks offline-first and needs the network policy gate and URL
+  allow-listing; `equation` needs a LaTeX subset parser that deserves its own fuzz target;
+  `toggle` needs per-viewer collapsed/expanded view state (its child-block half is already
+  covered by generic nesting); `callout` needs the icon and colour-token vocabulary.
+  Constructing one is impossible — there is no variant alternative — and reading one written by
+  a newer build yields `BlockTypeUnsupported` rather than a silently-wrong empty paragraph.
+- **Undo/redo**, and therefore **version history**. Out of scope for this run by instruction,
+  and deliberately *not* a stub method: doing it properly means an operation log with inverses,
+  which changes how every mutation is recorded. Bolting it on later is cheaper than faking it
+  now.
+- **Copy/paste** (needs a clipboard serialisation format), **backlinks** and **mentions** (need
+  inline rich-text spans plus a link index), **comments**, **sharing**, **permissions**,
+  **templates**.
+- **Rich text.** A block's text is a flat UTF-8 string. Inline bold/italic/link spans need an
+  inline run model plus the sequence CRDT that `database-design.md` reserves `block.crdt_state`
+  for.
+- **Child pages, databases, files and workspaces** — the other three arms of the §14 tree.
+  `page` has no `parent_id` or `workspace_id` column: absent rather than present-and-ignored,
+  so nothing can half-work. All three are additive migrations.
+- **Full-text search over block text.** No counterpart to `note_fts` yet; it needs the
+  denormalised `text_cache` fed into FTS5 under the same one-transaction discipline. This is
+  the one respect in which `Page` is currently *less* capable than `Note`, and it is step 1 of
+  ADR-0003's retirement path.
+- **Cross-page block moves** — rejected with `InvalidArgument`. The whole subtree's `page_id`
+  would have to be rewritten, and once backlinks and per-page FTS exist those indexes move with
+  it. A half-moved subtree is a corrupt document, so refusing is the honest answer.
+- **UUIDv7 layout.** Identifiers are 16 random bytes, so they lack the B-tree locality v7 buys.
+  The shape is already right, so this is a one-file change with no format migration.
+
+**One edit to `core/capi`, which this change was otherwise to leave alone.** Adding Status
+codes broke its *exhaustive* `to_c_status` switch under `-Werror=switch`. The nine new codes
+are listed explicitly and mapped to `UAPP_STATUS_UNEXPECTED`; no new `UAPP_STATUS_*` constant
+was minted. The C ABI is separately versioned and its codes are permanent, and nothing
+reachable through that boundary can return one of these yet — `core/capi` still exposes only
+`NoteService`. No ABI surface was added or changed.
+
+**Verification.** Built from scratch in Debug, Release, and Debug+ASan/UBSan: **zero warnings
+under `-Werror` in all three**, and `ctest` **6/6 passed** in each. `uapp_blocks_tests` reports
+**36 passed, 0 failed**; the pre-existing suites are unchanged — `uapp_notes_tests` still
+**42 passed, 0 failed**, the C ABI binary still **17 passed, 0 failed**, and
+`uapp.notes.cli_demo` still passes.
+
 ### Added — Phase 1 bootstrap: the note vertical slice (first production code)
 
 Implements exactly the slice spec §40 names as the task after architecture approval:
