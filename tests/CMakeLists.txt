@@ -61,6 +61,39 @@ add_test(NAME uapp.notes.cli_demo
 set_tests_properties(uapp.notes.unit uapp.notes.cli_demo PROPERTIES TIMEOUT 120)
 
 # ---------------------------------------------------------------------------
+# file-engine/detection — spec section 8/9 file-type detection.
+#
+# A third separate executable, and the most isolated of them: it links ONLY
+# uapp::file_detection, which in turn links only uapp::core_common. It cannot
+# reach SQLite, core/notes or core/blocks, so "detection is a pure function
+# of bytes with no storage and no document model behind it" is checked by the
+# build graph rather than by review. If a detection source ever needs a
+# database handle, this link line fails.
+#
+# Three CTest entries over one binary, split by name filter, because the
+# three failure modes mean different things: "a signature is wrong",
+# "a hostile file got through", and "a capability claim drifted from
+# file-format-support.md" are three different bugs with three different
+# owners.
+# ---------------------------------------------------------------------------
+add_executable(uapp_file_engine_tests
+    support/test_main.cpp
+    file_engine/detection_test.cpp
+    file_engine/file_value_test.cpp)
+
+target_include_directories(uapp_file_engine_tests PRIVATE support file_engine)
+
+target_link_libraries(uapp_file_engine_tests
+    PRIVATE uapp::file_detection uapp::compiler_options)
+
+add_test(NAME uapp.file_engine.detect    COMMAND uapp_file_engine_tests "detect.")
+add_test(NAME uapp.file_engine.malformed COMMAND uapp_file_engine_tests "malformed")
+add_test(NAME uapp.file_engine.unit      COMMAND uapp_file_engine_tests)
+
+set_tests_properties(uapp.file_engine.detect uapp.file_engine.malformed
+                     uapp.file_engine.unit PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
 # The C ABI, exercised from C.
 #
 # A separate executable, and separate ON PURPOSE: this one is compiled by the C

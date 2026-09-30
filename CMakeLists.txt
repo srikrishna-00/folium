@@ -3,11 +3,12 @@ cmake_minimum_required(VERSION 3.20)
 # ---------------------------------------------------------------------------
 # Universal AI Productivity Platform — native core build
 #
-# Phase 1 bootstrap: this file currently wires up only the vertical slice
+# Phase 1: this file wires up the vertical slice
 #   CREATE NOTE -> STORE LOCALLY -> SEARCH NOTE -> OPEN NOTE -> EDIT -> SAVE
-# (spec section 40, "FIRST TASK"). The remaining monorepo directories
-# (pdf-engine/, ocr/, scanner/, ai/, ...) are still empty Phase 0 skeletons
-# and are deliberately NOT added here yet.
+# (spec section 40, "FIRST TASK"), the block document model that supersedes it
+# (spec section 14), and file-engine/detection (spec section 8/9). The
+# remaining monorepo directories (pdf-engine/, ocr/, scanner/, ai/, ...) are
+# still empty Phase 0 skeletons and are deliberately NOT added here yet.
 #
 # Language level is C++17 per ADR-0001 ("Implement the core in C++17,
 # restricted to a disciplined subset, and export a pure C99 ABI"). The second
@@ -60,6 +61,12 @@ include(cmake/FindSQLite3Fts5.cmake)
 
 add_subdirectory(core)
 add_subdirectory(storage)
+
+# file-engine/ — spec section 8/9. Detection only so far. It is added after
+# core/ because it links uapp::core_common for Status and ObjectId, and it is
+# added BEFORE core/capi because it is a peer domain engine, not part of the
+# ABI composition root: nothing in core/capi references it yet.
+add_subdirectory(file-engine)
 
 # core/capi is added HERE rather than from core/CMakeLists.txt, and the order
 # is load-bearing: libuapp_capi is the composition root that binds the abstract

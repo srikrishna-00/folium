@@ -30,6 +30,11 @@ const char* status_code(Status s) noexcept {
         case Status::BlockCycleDetected:     return "BLOCK_CYCLE_DETECTED";
         case Status::PageTitleTooLong:       return "PAGE_TITLE_TOO_LONG";
         case Status::PageBlockLimitExceeded: return "PAGE_BLOCK_LIMIT_EXCEEDED";
+
+        case Status::FileEmpty:       return "FILE_EMPTY";
+        case Status::FilePathInvalid: return "FILE_PATH_INVALID";
+        case Status::FileOpenFailed:  return "FILE_OPEN_FAILED";
+        case Status::FileReadFailed:  return "FILE_READ_FAILED";
     }
     // Reached only if a caller casts a bogus integer into Status. We do not
     // trust that it cannot happen just because the enum is closed.
@@ -87,6 +92,15 @@ const char* status_message(Status s) noexcept {
             return "Page title exceeds the maximum allowed length.";
         case Status::PageBlockLimitExceeded:
             return "The page already holds the maximum allowed number of blocks.";
+
+        case Status::FileEmpty:
+            return "The file or buffer contains no bytes, so nothing can be detected.";
+        case Status::FilePathInvalid:
+            return "The file path was empty or contained an embedded NUL byte.";
+        case Status::FileOpenFailed:
+            return "The file could not be opened.";
+        case Status::FileReadFailed:
+            return "Reading the file failed before all requested bytes were available.";
     }
     return "Unrecognised status code.";
 }

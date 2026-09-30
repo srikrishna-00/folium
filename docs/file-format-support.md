@@ -431,6 +431,51 @@ symbol's meaning has changed and §1's legend must be updated when Phase 8 is sp
 
 ---
 
+## 12. Mapping this matrix onto the spec §8 capability flags
+
+Added when `file-engine/detection` landed. It is the first code to *consume* this document
+rather than merely describe intent: `format_capabilities()` returns the spec §8 capability set
+for a detected format, and a UI will use it to decide whether to show an "Edit" button. A
+wrong cell here becomes a button that fails at the point of use.
+
+**Five capabilities map straight onto a column:**
+
+| §8 capability | Rule |
+|---|---|
+| VIEW | matrix **VIEW** is ✔ or ◐ **and not ☁**. A ☁ cell is a per-document decrypt-and-upload consent flow (§11.3), not something the client can do. |
+| EDIT | matrix **EDIT** is ✔ or ◐. **P2 is not a capability.** |
+| CONVERT | matrix **CONVERT** is ✔ or ◐, and not ☁ / TBD / P2. |
+| OCR | matrix **OCR** is ✔ or ◐. |
+| ANNOTATE | matrix **ANNOTATION** is ✔ or ◐. |
+
+**Five have no column, so this section defines them.** *This is the deviation* — §9 of the
+spec lists ten capabilities and this matrix has six columns, and the gap had to be closed by
+judgment rather than transcription:
+
+| §8 capability | Definition adopted | Consequence |
+|---|---|---|
+| EXPORT | "the engine can write this format out" — i.e. exactly the **CREATE** column. The alternative reading ("can be saved elsewhere") is true of every byte sequence and carries no information. | GIF and ODT lose it (CREATE ✖); DOCX keeps it (CREATE ◐). |
+| COMPRESS | "can be losslessly repacked/optimised in place". Granted only where we ship a writer *and* recompression is lossless. | PDF (QPDF object streams, linearisation), PNG and ZIP (re-deflate). **Not JPEG** — §6 says re-encoding is lossy and must be disclosed, so it cannot be a silent action. |
+| SIGN | "apply or validate a document signature". | **Granted to nothing, PDF included.** §5.1 already says validation is P2/TBD and that "a half-implemented signature check is worse than none"; a flag that lights up a Sign affordance *is* that half-implementation. A test asserts this holds across the whole registry. |
+| ENCRYPT | "produce an encrypted copy in the format's own scheme". | **PDF only** (QPDF standard security handler R2–R6). **Not ZIP** — §8 marks AES-encrypted ZIP read-only. |
+| EXTRACT | "enumerate and pull out embedded sub-objects" (archive members, OOXML parts, PDF attachments). | The ZIP family and PDF. |
+
+**Two rows are worth calling out because the derived answer is narrower than a quick reading
+of the matrix suggests, and both are enforced by tests:**
+
+- **DOCX gets no EDIT.** §2 marks DOCX EDIT as **P2**. XLSX, by the same table, does get it —
+  so this is the actual matrix, not a blanket "OOXML is read-only" rule.
+- **PPTX gets EXTRACT and nothing else.** §4 marks VIEW as ◐ **P2** and says v1.0 ships "text +
+  notes extraction for search only". Claiming VIEW would be the most misleading cell we could
+  publish, so the derived set has exactly one member.
+
+**No matrix cell was changed.** Implementing detection did not contradict any existing claim;
+it only required the five definitions above. If a future engine change makes one of them
+wrong, this section and `file-engine/detection/include/uapp/file_engine/capabilities.h` must
+move together — the header cites this section by number.
+
+---
+
 ## 8. Sources
 
 - [PDFium LICENSE (googlesource)](https://pdfium.googlesource.com/pdfium/+/main/LICENSE)

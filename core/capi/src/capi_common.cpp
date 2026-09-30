@@ -91,6 +91,19 @@ uapp_status_t to_c_status(Status s) noexcept {
         case Status::PageTitleTooLong:
         case Status::PageBlockLimitExceeded:
             return UAPP_STATUS_UNEXPECTED;
+
+        // file-engine/detection (spec section 8/9) added these codes, and the
+        // paragraph above applies to them unchanged: listed so that this
+        // tripwire keeps working, mapped to UAPP_STATUS_UNEXPECTED, and NO
+        // new UAPP_STATUS_* constant minted. core/capi still exposes only
+        // NoteService, so nothing reachable through this boundary can return
+        // one of them; the file ABI will choose its own vocabulary when it
+        // exists.
+        case Status::FileEmpty:
+        case Status::FilePathInvalid:
+        case Status::FileOpenFailed:
+        case Status::FileReadFailed:
+            return UAPP_STATUS_UNEXPECTED;
     }
     // A code the core added and this layer has not been taught. We must not
     // guess a meaning for it; say so honestly instead.

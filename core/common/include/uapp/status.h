@@ -57,6 +57,14 @@ enum class Status : std::int32_t {
     BlockCycleDetected     = 505,  ///< a move would make a block its own ancestor
     PageTitleTooLong       = 506,
     PageBlockLimitExceeded = 507,  ///< page already holds kMaxBlocksPerPage blocks
+
+    // --- file engine (6xx) -------------------------------------------------
+    // Detection only at this point. Parse/convert/render errors get their own
+    // codes when those engines exist; they are NOT squeezed in here.
+    FileEmpty       = 600,  ///< zero bytes: nothing to detect, distinct from "no match"
+    FilePathInvalid = 601,  ///< empty path, or a path containing a NUL byte
+    FileOpenFailed  = 602,  ///< the path does not exist or could not be opened
+    FileReadFailed  = 603,  ///< the file opened but a read failed part-way through
 };
 
 /// True iff the operation succeeded. Prefer `if (!uapp::is_ok(s))` over

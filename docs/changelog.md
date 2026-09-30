@@ -12,6 +12,139 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `file-engine/detection`: real file-type detection (spec §8/§9)
+
+The foundational answer to "what is this file, and what may we do with it?", which the PDF
+engine, scanner, OCR and conversion will each call **before** trusting a filename. Detection
+only: this module does not open, parse, render or convert anything, and must not — it is what
+decides whether a parser should be invoked at all (`architecture.md` §5).
+
+**Spec §8's "never trust the file extension alone" is enforced structurally, not by
+convention.** `DetectionResult::format` is only ever assigned from bytes; there is no code
+path by which a filename can set it. What the name claimed goes to `extension_hint`, and a
+disagreement raises `extension_conflicts` — the security-interesting output, since an
+`invoice.pdf` whose bytes are a ZIP is worth showing a human. The deliberate consequence: a
+`.mp3` whose sniffer does not exist detects as `Unknown`, not as MP3. That is the honest
+answer.
+
+- **Detection implemented for ten formats**: PDF, PNG, JPEG, GIF, ZIP, DOCX, XLSX, PPTX, ODT,
+  and UTF-8/ASCII plain text. Signatures are compared in full — all eight PNG bytes, not four,
+  because the CRLF/EOF guard bytes exist precisely to catch the corruption a short check
+  misses. PDF is scanned across the first 1 KiB rather than at offset 0 (real files carry
+  preambles; every other viewer accepts them) and the **offset is reported** rather than
+  silently normalised away.
+- **The ambiguous case is the substance of the module.** DOCX, XLSX, PPTX, ODT, EPUB and an
+  archive of holiday photos share the same four magic bytes. Two strategies, and which one was
+  used is **reported** so a security decision is never taken on a guess: a **central-directory
+  walk** (authoritative → `MagicAndContainer` confidence) and a **local-header walk** (best
+  effort, defeatable by a crafted archive → capped at `Magic`, with `container_truncated` set).
+  ODF is read from its `mimetype` member, which the ODF spec mandates be first and STORED for
+  exactly this purpose. An OOXML package we cannot name stays `Zip` and sets
+  `unrecognised_ooxml` — never a guess between the three families.
+- **The API works on a path *and* on a buffer**, because a mobile picker returns a
+  security-scoped URI or bytes, never a POSIX path. One engine (`detect_sample`, pure and
+  `noexcept`) under three entry points; `detect_path` reads a bounded **head and tail** window
+  and never the whole file — the tail exists solely because a ZIP's member list lives at the
+  end, so a 10 MB DOCX is classified authoritatively from ~192 KB of reads.
+- **The spec §8 `File` value** with all eleven fields. `location` is a tagged `FileLocation`,
+  not a string: on mobile there is often no path, and a fake path is a path something will
+  eventually try to open. `id` and timestamps are **passed in**, not generated — a detector
+  that reaches for an ambient clock or RNG is untestable, and both are ports
+  (`core/common/ports.h`).
+- **Checksum: FNV-1a 64 with an avalanche finaliser**, tagged `ChecksumAlgorithm::Fnv1a64`.
+  Chosen over SHA-256 because this field is an *integrity digest*, not a signature: libsodium
+  is not vendored yet and §7.10 requires seven steps before any dependency lands, hand-rolling
+  SHA-256 in the detection module is worse, and SHA-256 costs ~10× per byte over every byte of
+  every file opened on Tier D hardware. Chosen over xxHash for the same §7.10 reason. The
+  finaliser fixes FNV-1a's weak low-bit avalanche for three instructions *per file*.
+  **`Checksum` is deliberately shaped as `{algorithm tag, length, 32-byte array}`, not a bare
+  `uint64_t`** — adding SHA-256 later is then a new enumerator, not a data migration.
+- **Capabilities are derived from `file-format-support.md`, not hand-written.** The derivation
+  rules are now **§12 of that document**, and the notable results are enforced by tests:
+  **DOCX gets no EDIT** (the matrix marks it P2), **PPTX gets EXTRACT and nothing else** (v1.0
+  is text extraction for search), **nothing at all gets SIGN** (§5.1: "a half-implemented
+  signature check is worse than none"), **only PDF gets ENCRYPT** (not ZIP — AES-ZIP is
+  read-only), and **JPEG gets no COMPRESS** (re-encoding is lossy). An unidentified file gets
+  the **empty** set, never a default of VIEW.
+- **Malformed input is a first-class requirement (spec §28/§29), handled by the type system
+  rather than by scattered length checks.** Every byte read goes through `ByteSpan`, which has
+  no accessor that can read out of range: `equal_at` returns false rather than comparing a
+  short buffer, `read_u32le` never half-writes its output, `subspan` clamps, and every
+  `offset + length` is computed with an overflow guard so a `0xFFFFFFFF` length from a corrupt
+  ZIP header cannot wrap. The ZIP walks are entry-capped, name-capped, must strictly advance,
+  and reject a central directory whose offset lies outside the file rather than clamping it
+  into live content.
+
+**Deviation from `file-format-support.md`, recorded in its new §12.** Spec §8 names ten
+capabilities; the matrix has six columns. **No existing cell was changed** — implementing
+detection contradicted nothing — but EXPORT, COMPRESS, SIGN, ENCRYPT and EXTRACT had no column
+and are now *defined* there (EXPORT ⇔ the CREATE column; COMPRESS ⇔ lossless repack where we
+ship a writer; SIGN ⇔ nothing; ENCRYPT ⇔ PDF only; EXTRACT ⇔ the ZIP family and PDF).
+
+**NOT IMPLEMENTED** (declared with a permanent enum value and a machine-readable reason, never
+faked — the `block_type_not_implemented_reason()` precedent):
+
+- **The other ~35 formats of spec §9.** The registry enumerates all of them, and answers three
+  *different* questions: `format_detection_is_implemented(f)`, why not
+  (`format_detection_not_implemented_reason(f)`), and — separately —
+  `DetectionResult::format == Unknown`, meaning the sniffer ran and matched nothing. A test
+  asserts the two queries can never disagree and that no unimplemented format is left without
+  a reason. Summaries: legacy **DOC/XLS/PPT** share one OLE2/CFB header, so sniffing it names
+  the container not the document, and §2 marks all three server-only anyway; **MD/HTML/XML/
+  JSON/CSV/SVG/FB2/RTF** are text dialects with no magic number, so they detect as PlainText —
+  true rather than wrong; **ODS/ODP/EPUB** need only a member-path signature added to the
+  existing introspection; **HEIC/AVIF/MP4/MOV** share the ISO-BMFF `ftyp` brand space and
+  deserve one sniffer rather than four half-sniffers; audio/video are deferred behind PQ-5 and
+  the FFmpeg decision; **WEBP/TIFF/BMP/TAR/GZ/7Z** have trivial signatures but no engine
+  behind them, and an unconsumed detection result is a claim with nothing behind it; **RAR** is
+  permanently out of scope (§7.7).
+- **Zip64 central-directory parsing.** The sentinels are *detected* and cause a documented
+  fallback to the local-header walk, rather than following `0xFFFFFFFF` as a literal offset.
+  Tested.
+- **Legacy 8-bit charset detection** (Windows-1252, ISO-8859-x, Shift-JIS). A statistical
+  problem needing ICU's `CharsetDetector` (§7.1 ADOPT, not integrated). Such a file fails the
+  UTF-8 check and reports `Unknown` — "we cannot tell what encoding this is" beats handing
+  mojibake to an editor.
+- **Format-specific metadata** — EXIF/XMP, the PDF Info dictionary, OOXML `docProps`, ID3. All
+  require opening the format. Putting an untrusted-input parser inside the module whose job is
+  to decide whether a parser should run at all would invert `architecture.md` §5.
+- **`DetectionHints::declared_mime_type` is accepted and ignored.** Declared now because the
+  upload and Android-picker call sites are being written against this header, but using it
+  needs a trust order between a host-asserted type and our own sniffing — a `security-model.md`
+  policy question. Today the bytes win unconditionally, which is the safe default to be stuck
+  with.
+- **`FileLocation::Kind::PlatformUri` cannot be resolved**; that needs the platform vtable.
+  Carried, not dereferenced.
+- **No fuzz target yet**, though `detect_sample` was deliberately kept pure, `noexcept` and
+  I/O-free (all filesystem code is isolated in `detector_path.cpp`) precisely so that adding
+  `LLVMFuzzerTestOneInput` is a few lines. `testing-strategy.md` §6 requires one before this
+  ships.
+
+**One edit to `core/capi`, which this change was otherwise to leave alone** — the same
+tripwire, and the same resolution, as the `core/blocks` change below. Adding the four 6xx
+`Status` codes broke its *exhaustive* `to_c_status` switch under `-Werror=switch`. They are
+listed explicitly and mapped to `UAPP_STATUS_UNEXPECTED`; **no new `UAPP_STATUS_*` constant was
+minted** and no ABI surface changed, because `core/capi` still exposes only `NoteService` and
+nothing reachable through that boundary can return one of them. That switch exists to force
+this decision rather than allow a silent `default:`, so extending it is the mechanism working.
+
+**Verification.** Configured and built from scratch in **Debug**, **Release** and
+**Debug+ASan/UBSan**: **zero warnings under `-Werror`** in all three, with `-fno-exceptions`
+and `-fno-rtti` unchanged. `ctest` **9/9 passed** in each. `uapp_file_engine_tests` reports
+**65 passed, 0 failed**, including under ASan/UBSan. The new binary links **only**
+`uapp::file_detection` → `uapp::core_common`, so "detection has no storage and no document
+model behind it" is checked by the linker rather than by review.
+
+**Two defects were found by these tests and fixed.** (1) The container/content exemption in
+`resolve_conflict` was symmetric, so it suppressed the mismatch flag for *any* ZIP — meaning a
+plain ZIP renamed `vacation.jpg` was reported without a conflict, defeating the one signal the
+flag exists for. The rule is now asymmetric and evidence-aware: a `.docx` named `.zip` is not a
+lie, a ZIP named `.jpg` is, and a ZIP named `.docx` is a conflict only when the directory walk
+actually *proved* the `word/` part absent — a truncated container is unproven, not guilty.
+(2) `central_directory_unreachable` was set whenever the directory scan produced no useful
+evidence, conflating "we walked it and this is just a ZIP" with "we could not read it", which
+would have lowered confidence on every ordinary archive.
+
 ### Added — `core/blocks`: the real block document model (spec §14)
 
 The flat note is superseded. This implements the structure spec §14 actually asks for —
