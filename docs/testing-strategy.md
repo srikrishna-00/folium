@@ -95,9 +95,9 @@ that every file under `*/parsers/` has a corresponding target in `tests/fuzz/`.
 
 | Target | Input | Priority | Note |
 |---|---|---|---|
-| `fuzz_pdf_parse` | PDF bytes | **P0** | Largest attack surface |
-| `fuzz_pdf_render` | PDF + page index | **P0** | Rendering is a separate code path from parsing |
-| `fuzz_pdf_content_stream` | content stream bytes | **P0** | Redaction and text extraction depend on this |
+| `fuzz_pdf_parse` | PDF bytes | **P0** | Largest attack surface. **BUILT** — `tests/fuzz/fuzz_pdf_reader.cpp`; see §6.4 |
+| `fuzz_pdf_render` | PDF + page index | **P0** | Rendering is a separate code path from parsing. **BUILT** — same harness, same iteration; see §6.4 |
+| `fuzz_pdf_content_stream` | content stream bytes | **P0** | Redaction and text extraction depend on this. Not built: there is no first-party content-stream entry point to call |
 | `fuzz_zip` | ZIP bytes | **P0** | Gateway to all OOXML; bombs and zip-slip |
 | `fuzz_docx` | DOCX bytes | **P0** | |
 | `fuzz_xlsx` | XLSX bytes | **P0** | |
@@ -131,11 +131,12 @@ that every file under `*/parsers/` has a corresponding target in `tests/fuzz/`.
 
 ### 6.3 What is actually built today
 
-**One of the eighteen targets in §6.1 exists: `fuzz_detect`, as the executable
-`fuzz_file_detection`.** The other seventeen name parsers that are still empty Phase 0
+**Two harnesses exist, covering three of the eighteen rows in §6.1: `fuzz_detect`
+(executable `fuzz_file_detection`) and `fuzz_pdf_reader`, which covers both `fuzz_pdf_parse`
+and `fuzz_pdf_render`.** The remaining rows name parsers that are still empty Phase 0
 directories; a stub harness over a module that does not exist would turn this gate into a
-checklist of targets that fuzz nothing. This section says exactly what is real so the gap is
-visible rather than implied.
+checklist of targets that fuzz nothing. §6.3 and §6.4 say exactly what is real, one per
+harness, so the gap stays visible rather than implied.
 
 | | |
 |---|---|
@@ -253,6 +254,166 @@ degrading to plain `zip` and seeding the fuzzer with three fewer real formats th
 Caught by checking each seed's detected format before the first run, and fixed in the
 generator. Worth recording because a silently-wrong seed corpus is the failure mode that makes
 a fuzz run look fine while testing much less than it claims.
+
+### 6.4 `fuzz_pdf_reader` — the PDF target
+
+| | |
+|---|---|
+| Harness | `tests/fuzz/fuzz_pdf_reader.cpp` |
+| Under test | `uapp::pdf::Document::open_buffer`, `page_count`, `page_size`, `render_page` — the whole of `pdf-engine/reader` |
+| §6.1 rows covered | `fuzz_pdf_parse` **and** `fuzz_pdf_render` |
+| Seed corpus | `tests/fixtures/corpus/fuzz_pdf_reader/` (10 files) |
+| Build switch | `UAPP_ENABLE_FUZZING` (**default OFF**), plus a vendored PDFium |
+
+**One harness for two rows.** §6.1 lists parsing and rendering separately because "rendering is
+a separate code path from parsing", and that is true — but `pdf-engine/reader` is one library
+behind one door, so two binaries would mean two processes re-parsing the same bytes to reach
+the second half of the same call chain. The separation §6.1 wants is honoured by exercising
+both in *every iteration* instead: open, count the pages, measure them, then rasterise page 0
+into a caller-owned buffer. `fuzz_pdf_content_stream` stays unbuilt — there is no first-party
+content-stream entry point to call.
+
+**Why this entry point.** Same reasoning as §6.3: `open_buffer` takes raw bytes with no path
+and no filesystem. Here it is also the *only* door — `document.h` design rule 1 is "buffer
+first, path never", so there is no second entry point left unfuzzed. The input byte string is
+the PDF file verbatim; the two things a PDF's bytes cannot carry, the **password** and the
+**render geometry**, are derived deterministically from the input's own first byte, exactly as
+§6.3's harness derives a filename.
+
+#### The honest limit: PDFium is not instrumented
+
+`third_party/pdfium` is a **prebuilt** `libpdfium.dylib` (see its README, "What is still
+owed"). It carries no SanitizerCoverage and no ASan/UBSan instrumentation, and nothing the
+harness does can add any. Two consequences, stated here rather than discovered later:
+
+1. **libFuzzer's coverage feedback comes from the wrapper, not the parser.** 316 edges is the
+   wrapper's size, not PDFium's; the mutator is close to blind past the first branch that
+   matters. That is why the seed corpus carries hand-built adversarial structures instead of
+   trusting mutation to invent them.
+2. **ASan sees PDFium's heap through the malloc interceptor** — a double-free, a use-after-free
+   of a heap block, or an overflow caught by an intercepted libc call *is* reported — but a
+   plain out-of-bounds read inside uninstrumented PDFium code is **not**, because there is no
+   instrumented load to check. UBSan sees nothing inside PDFium at all.
+
+What this target therefore genuinely covers is *our* layer: the `Status` mapping, the `Library`
+refcount, the bounds arithmetic, and — because the render destination is an **exact-fit** heap
+allocation flanked by ASan redzones — any write by PDFium outside the geometry `RenderTarget`
+authorised. That last one is the memory-safety property this module actually promises, and it
+is checkable today. The rest waits on the hermetic from-source PDFium build SP-1 asks for.
+
+#### The oracle
+
+Every input is held to the `Status` sets `document.h` states in prose, **and only to those**:
+`open_buffer` returns one of Ok / InvalidArgument / FileEmpty / PdfMalformed /
+PdfPasswordRequired / PdfSecurityUnsupported; `page_size` one of Ok / PdfNotOpen /
+PdfPageNotFound / PdfPageLoadFailed; `render_page` one of those plus PdfRenderSizeInvalid /
+PdfBufferTooSmall / PdfRenderFailed. Also asserted: a failed open leaves no half-open
+`Document`, `page_count()` is never negative, an index of `-1` or `page_count` is always
+`PdfPageNotFound` on both page-level entry points, a geometry `required_buffer_bytes()`
+accepted is never then rejected by `render_page`, and a successful render never touches the
+caller's **row padding**. Deliberately *not* asserted: that a page has positive dimensions,
+that a recovered document has any particular page count, or that a broken content stream fails
+— `document.h` promises none of those and PDFium's xref-rebuilding recovery makes all three
+legitimately variable. Inventing a stricter rule than the header would manufacture a fake
+defect, which is the trap §6.3 already calls out.
+
+Page walking is capped at 48 pages per input. A hostile PDF can claim a very large page count
+cheaply, and walking all of it would turn every such input into a libFuzzer timeout — a
+*harness*-amplified hang, not a product one, and §6.2's "timeout and OOM are findings" only
+means anything if the findings belong to the product. The last index is probed separately, so
+the count/index boundary is still covered on a large document.
+
+#### Building and running it
+
+Same switch and same toolchain requirement as §6.3, plus a vendored PDFium
+(`third_party/pdfium/fetch_pdfium.sh`). Unlike `storage/` and `core/capi`, `pdf-engine/` is
+**not** skipped in a fuzz build — those two are off the untrusted-input path and only cost
+build time, whereas the PDF reader *is* the untrusted-input path. If no PDFium is vendored the
+target simply does not exist and the fuzz build still produces `fuzz_file_detection`; a missing
+third-party binary must not become a configure error for someone who did not ask for PDF.
+
+```sh
+cmake -S . -B build-fuzz -DUAPP_ENABLE_FUZZING=ON -DUAPP_ENABLE_PDF=ON \
+      -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang \
+      -DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++
+cmake --build build-fuzz -j
+
+mkdir -p /tmp/uapp-fuzz-pdf-work
+./build-fuzz/bin/fuzz_pdf_reader -max_total_time=120 -print_final_stats=1 \
+    -timeout=25 -rss_limit_mb=2048 \
+    -artifact_prefix=/tmp/uapp-fuzz-artifacts/ \
+    /tmp/uapp-fuzz-pdf-work tests/fixtures/corpus/fuzz_pdf_reader/
+```
+
+`-timeout` and `-rss_limit_mb` are not decoration the way they would be for the detector. §6.2
+says "a PDF that takes 30 s to parse is a DoS", and a PDF parser is the one component in this
+repo where an input genuinely can ask for unbounded work or unbounded memory. At the defaults a
+decompression bomb reads as a slow iteration instead of as the finding it is.
+
+#### Seed corpus
+
+Ten files. Eight are the **byte-identical output of `tests/pdf_engine/pdf_fixture.h`**, so a
+fixture and its seed cannot drift into describing different files (the same guarantee §6.3's
+ZIP seeds get from `zip_fixture.h`): the valid two-page document, a bare `%PDF-` header with no
+body, a `startxref` pointing past EOF, four truncations (4, 40, 300 and *n*−40 bytes), and the
+regression fixture below. The ninth is a PDF whose trailer claims an `/Encrypt` dictionary
+(standard security handler, V1/R2) — the only seed that reaches PDFium's security handler and
+the only one that makes the harness exercise the password overload of `open_buffer`. The tenth
+is the raw libFuzzer reproducer for the finding below, kept verbatim.
+
+Each seed's behaviour was checked against the reader *before* the first run, which is the
+control §6.3's corpus-generator bug argued for: valid → Ok/2 pages/200×100/render Ok,
+`startxref`-past-EOF → Ok (PDFium rebuilds the table), `/Encrypt` → PdfPasswordRequired, all
+four truncations and the bare header → PdfMalformed.
+
+#### Run record
+
+| Date | Build | Runs | Duration | exec/s | Coverage | Findings |
+|---|---|---|---|---|---|---|
+| 2026-09-30 | LLVM 23.1.2, Debug, ASan+UBSan, **pre-fix** | 139 | aborted on the finding | — | 286 edges / 344 features | **1 — oracle violation, real product bug** |
+| 2026-09-30 | post-fix, clean, seed corpus only (the documented command, run verbatim) | 1 687 510 | 121 s | 13 946 | 316 edges / 472 features | none |
+| 2026-09-30 | continued, from evolved corpus | 1 924 058 | 121 s | 15 901 | 316 edges / 481 features | none |
+| 2026-09-30 | `-max_len=131072` | 1 821 616 | 121 s | 15 054 | 316 edges / 481 features | none |
+
+**5 433 184 executions over 363 s after the fix: zero crashes, zero hangs (slowest unit < 1 s),
+zero sanitizer reports, zero oracle violations.** Coverage and the working corpus (21–22 units)
+both plateaued, so this is a saturated smoke run *for an uninstrumented PDFium* — see the
+honest-limit note above; it is emphatically not a claim that the PDF parser is clean, which
+needs both the ≥ 4 h nightly cadence in §6.2 and an instrumented PDFium. Raising the length cap
+to 128 KiB added nothing, which is consistent with feedback coming from the wrapper.
+
+#### The finding: a real product bug, fixed
+
+At **139 executions** the fuzzer mutated the valid seed's page tree from `/Kids [3 0 R 4 0 R]`
+to `/Kids [3 0 R 44 0 R]`, leaving `/Count 2`. Object 44 does not exist, so `page_count()`
+returned 2 and index 1 was simultaneously *in range* and *unresolvable* — a combination no
+well-formed file can produce and no hand-written case had covered.
+
+`page_size()` and `render_page()` both answered it by calling the document-load error mapper,
+which reads PDFium's process-global `FPDF_GetLastError()`. Neither `FPDF_GetPageSizeByIndexF`
+nor `FPDF_LoadPage` writes that global, so it still held `FPDF_ERR_SUCCESS` from the document
+load that had just succeeded, and the mapper turned "no error" into **`Status::Internal`**.
+
+Two defects in one, and neither is cosmetic. `Internal` is outside both functions' documented
+return sets, so a caller switching on the documented statuses fell through to its default
+branch; and `status.h` defines `Internal` as *"a bug in us, not in the caller's input"* for a
+condition caused entirely by the caller's input — meaning attacker-supplied bytes could make
+the product report an internal defect, lying to whoever reads the log and poisoning any
+error-rate alert built on it.
+
+**Fix:** both page-level call sites now return `Status::PdfPageLoadFailed` (704, *"index in
+range, but the page object is unusable"*) unconditionally instead of consulting a global that
+nothing wrote. No information is lost, because there was none. The mapper is now
+document-load-only and says so. **Regression test:** `pdf.malformed an in-range page that will
+not load is PDF_PAGE_LOAD_FAILED`, over a new `dangling_page_reference_pdf()` fixture rebuilt
+from source per `pdf_fixture.h`'s no-opaque-blobs rule; the raw reproducer is also a corpus
+seed. Confirmed failing (`Internal`) against the pre-fix build and passing after.
+
+*Deviation from §6.2, recorded rather than hidden:* §6.2 says the reproducer is checked into
+`tests/fixtures/regressions/` with an issue id. There is no such directory and no issue tracker
+in this repo yet, so the reproducer went to the seed corpus and the regression lives as a
+source-built fixture in the normal unit suite — which is the part of §6.2 that actually
+matters ("runs in the normal unit suite forever").
 
 ## 7. Sanitizers and static analysis
 

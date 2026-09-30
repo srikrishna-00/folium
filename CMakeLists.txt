@@ -131,13 +131,16 @@ add_subdirectory(file-engine)
 # Resolve the tristate into UAPP_PDF_ENABLED (a plain bool the rest of the
 # build and tests/ can branch on).
 #
-# Skipped under UAPP_ENABLE_FUZZING for the same reason storage is: the fuzz
-# configuration builds the one library under test and its harness. There is
-# no PDF fuzz target yet — spec §29 names the PDF parser first in its list
-# and that gap is recorded in docs/changelog.md rather than hidden behind a
-# switch that looks like it covers it.
+# NOT skipped under UAPP_ENABLE_FUZZING, unlike storage/ and core/capi. Those
+# two are off the untrusted-input path and only cost fuzz build time; the PDF
+# reader IS the untrusted-input path — spec §29 names the PDF parser first in
+# its required-fuzz-targets list — so under fuzzing this is a *library under
+# test*, not an extra. `tests/fuzz/fuzz_pdf_reader` is built iff this resolves
+# TRUE, which keeps the AUTO contract intact: a fuzz build on a machine with
+# no vendored PDFium still configures and still builds fuzz_file_detection,
+# it just has one fewer target and says so.
 set(UAPP_PDF_ENABLED FALSE)
-if(NOT UAPP_ENABLE_FUZZING AND NOT UAPP_ENABLE_PDF STREQUAL "OFF")
+if(NOT UAPP_ENABLE_PDF STREQUAL "OFF")
     include(cmake/UappPdfium.cmake)
 
     if(UAPP_PDFIUM_FOUND)

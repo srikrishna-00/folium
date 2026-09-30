@@ -27,9 +27,12 @@
 // WHAT THIS IS NOT: a corpus. Two valid pages and a few deliberately broken
 // buffers exercise the contract; they do not explore the format. Spec
 // section 29 puts the PDF parser first on the fuzz list and testing-strategy
-// §6 says a parser without a fuzz target does not merge. There is no PDF
-// fuzz target yet — see docs/changelog.md. These fixtures are the shape a
-// seed corpus would start from, not a substitute for one.
+// §6 says a parser without a fuzz target does not merge. That target now
+// exists (`tests/fuzz/fuzz_pdf_reader.cpp`), and these fixtures are its seed
+// corpus: `tests/fixtures/corpus/fuzz_pdf_reader/` holds the byte-identical
+// output of the functions below, so a fixture and its seed cannot drift into
+// describing different files. They remain the shape a corpus starts from,
+// not a substitute for the evolved one.
 
 #ifndef UAPP_TESTS_PDF_ENGINE_PDF_FIXTURE_H
 #define UAPP_TESTS_PDF_ENGINE_PDF_FIXTURE_H
@@ -174,6 +177,64 @@ inline std::vector<std::uint8_t> header_only_pdf() {
     return std::vector<std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text),
                                      reinterpret_cast<const std::uint8_t*>(text) +
                                          std::char_traits<char>::length(text));
+}
+
+/// A structurally valid PDF whose page tree promises two pages and delivers
+/// one: `/Kids` names object 44, which does not exist, while `/Count` still
+/// says 2.
+///
+/// This is the shape `tests/fuzz/fuzz_pdf_reader` found (it mutated
+/// `two_page_pdf()`'s "4 0 R" into "44 0 R"), and it is the regression
+/// fixture for the bug that finding exposed: `page_count()` returns 2,
+/// because PDFium believes the /Count, but page 1 cannot be resolved — so
+/// every page-level entry point is called with an index that is *in range*
+/// and *unresolvable at the same time*. That combination is not reachable
+/// from any well-formed file, which is why no hand-written case had covered
+/// it. Rebuilt from source rather than checked in as the raw reproducer
+/// blob, for the reasons at the top of this file; the reproducer itself
+/// lives in `tests/fixtures/corpus/fuzz_pdf_reader/` where opaque bytes
+/// belong.
+inline std::vector<std::uint8_t> dangling_page_reference_pdf() {
+    const std::string content0 = "0 0 0 rg\n20 20 160 60 re\nf\n";
+
+    std::vector<std::string> objects;
+    objects.emplace_back("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    // Count 2, but the second Kid is a reference into nothing.
+    objects.emplace_back(
+        "2 0 obj\n<< /Type /Pages /Kids [3 0 R 44 0 R] /Count 2 >>\nendobj\n");
+    objects.emplace_back(
+        "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+        "/Resources << >> /Contents 4 0 R >>\nendobj\n");
+    objects.emplace_back(detail::content_stream_object(4, content0));
+
+    std::string pdf = "%PDF-1.7\n%\xE2\xE3\xCF\xD3\n";
+
+    std::vector<std::size_t> offsets;
+    offsets.reserve(objects.size());
+    for (const std::string& object : objects) {
+        offsets.push_back(pdf.size());
+        pdf += object;
+    }
+
+    // The xref is CORRECT for the objects that exist. That is deliberate:
+    // if the table were also broken, PDFium's rebuild path would run and the
+    // case would be testing recovery instead of the dangling reference.
+    const std::size_t xref_offset = pdf.size();
+    pdf += "xref\n0 ";
+    pdf += std::to_string(objects.size() + 1);
+    pdf += "\n";
+    pdf += detail::xref_entry(0, /*in_use=*/false);
+    for (std::size_t offset : offsets) {
+        pdf += detail::xref_entry(offset, /*in_use=*/true);
+    }
+
+    pdf += "trailer\n<< /Size ";
+    pdf += std::to_string(objects.size() + 1);
+    pdf += " /Root 1 0 R >>\nstartxref\n";
+    pdf += std::to_string(xref_offset);
+    pdf += "\n%%EOF\n";
+
+    return std::vector<std::uint8_t>(pdf.begin(), pdf.end());
 }
 
 /// A valid PDF whose startxref points far past the end of the buffer. Tests

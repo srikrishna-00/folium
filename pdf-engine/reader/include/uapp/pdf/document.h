@@ -63,8 +63,14 @@
 //     parser as a fuzz target, and `docs/risk-register.md` treats it as the
 //     highest-risk parser in the product. Every entry point validates before
 //     it calls PDFium, and PDFium's own failures map onto Status rather than
-//     onto a crash. No fuzz target exists for this module yet — that gap is
-//     recorded in the changelog, not papered over.
+//     onto a crash. That fuzz target now exists —
+//     `tests/fuzz/fuzz_pdf_reader.cpp`, `testing-strategy.md` §6.4 — and the
+//     RETURN SETS DOCUMENTED BELOW ARE WHAT IT CHECKS on every input. They
+//     are a contract, not a summary: the first bug the fuzzer found was
+//     `page_size` and `render_page` returning `Status::Internal`, which is
+//     not in either list, for a PDF whose page tree names an object that
+//     does not exist. Widening one of these lists is therefore a real API
+//     change, and narrowing the implementation to fit is usually the fix.
 
 #ifndef UAPP_PDF_DOCUMENT_H
 #define UAPP_PDF_DOCUMENT_H

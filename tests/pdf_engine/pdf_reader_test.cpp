@@ -394,6 +394,48 @@ UAPP_TEST("pdf.malformed a startxref pointing past EOF does not read out of boun
     }
 }
 
+UAPP_TEST("pdf.malformed an in-range page that will not load is PDF_PAGE_LOAD_FAILED") {
+    // REGRESSION — found by tests/fuzz/fuzz_pdf_reader at 139 executions,
+    // mutating two_page_pdf()'s second Kid from "4 0 R" to "44 0 R".
+    //
+    // The page tree says /Count 2, so page_count() is 2 and index 1 is in
+    // range; object 44 does not exist, so the page cannot be resolved. Both
+    // page-level entry points used to answer that by reading PDFium's
+    // process-global FPDF_GetLastError(), which neither
+    // FPDF_GetPageSizeByIndexF nor FPDF_LoadPage writes — so it still held
+    // FPDF_ERR_SUCCESS from the document load that had just succeeded, and
+    // the mapper turned "no error" into Status::Internal.
+    //
+    // Two things were wrong with that and this case pins both. Internal is
+    // not in either function's documented return set, so a caller switching
+    // on the documented statuses fell through to its default branch; and
+    // status.h defines Internal as "a bug in us, not in the caller's input"
+    // for a condition caused entirely by the caller's input, which means
+    // attacker-supplied bytes could make the product report an internal
+    // defect.
+    const std::vector<std::uint8_t> pdf = fx::dangling_page_reference_pdf();
+    Document                        doc;
+    UAPP_REQUIRE_OK(Document::open_buffer(pdf.data(), pdf.size(), doc));
+    UAPP_CHECK_MSG(doc.page_count() == 2, "the /Count is what PDFium reports, broken or not");
+
+    // Page 0 is intact and must be unaffected by the fix.
+    PageSize page0;
+    UAPP_REQUIRE_OK(doc.page_size(0, page0));
+    UAPP_CHECK(near_enough(page0.width_points, fx::kPage0WidthPoints));
+
+    // Page 1 is the dangling one: in range, unresolvable.
+    PageSize page1;
+    UAPP_REQUIRE_STATUS(doc.page_size(1, page1), Status::PdfPageLoadFailed);
+
+    PixelBuffer buffer(16, 16);
+    UAPP_REQUIRE_STATUS(doc.render_page(1, buffer.target()), Status::PdfPageLoadFailed);
+
+    // And the index boundary still means what it meant: "out of range" and
+    // "in range but broken" are different answers, not the same one.
+    UAPP_REQUIRE_STATUS(doc.page_size(2, page1), Status::PdfPageNotFound);
+    UAPP_REQUIRE_STATUS(doc.render_page(2, buffer.target()), Status::PdfPageNotFound);
+}
+
 UAPP_TEST("pdf.malformed operations on an unopened Document are PDF_NOT_OPEN") {
     Document doc;
     PageSize size;

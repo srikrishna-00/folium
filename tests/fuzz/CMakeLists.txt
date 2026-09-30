@@ -6,11 +6,12 @@
 # normal build, and no target here is registered with ctest: a fuzz target has
 # no pass/fail, it has a time budget.
 #
-# ONE TARGET, DELIBERATELY. testing-strategy.md §6.1 lists eighteen; this is
-# `fuzz_detect`, the only one whose subject exists yet. The other seventeen
-# name parsers (PDF, TIFF, XML, CBOR sync deltas) that are still empty Phase 0
-# directories — adding stub targets for them would turn a real gate into a
-# checklist of harnesses that fuzz nothing.
+# TWO TARGETS, DELIBERATELY. testing-strategy.md §6.1 lists eighteen; these
+# are the only two whose subject exists: `fuzz_detect` over
+# file-engine/detection, and `fuzz_pdf_reader` over pdf-engine/reader. The
+# rest name parsers (TIFF, XML, CBOR sync deltas, OOXML) that are still empty
+# Phase 0 directories — adding stub targets for them would turn a real gate
+# into a checklist of harnesses that fuzz nothing.
 # ---------------------------------------------------------------------------
 
 add_executable(fuzz_file_detection fuzz_file_detection.cpp)
@@ -25,6 +26,40 @@ target_link_libraries(fuzz_file_detection
 # reach any other executable in the project.
 target_compile_options(fuzz_file_detection PRIVATE -fsanitize=fuzzer)
 target_link_options(fuzz_file_detection PRIVATE -fsanitize=fuzzer)
+
+# ---------------------------------------------------------------------------
+# fuzz_pdf_reader — testing-strategy.md §6.1's first-listed target, covering
+# both `fuzz_pdf_parse` and `fuzz_pdf_render` in one binary (see the header
+# comment in fuzz_pdf_reader.cpp for why they are not split).
+#
+# CONDITIONAL, on exactly the same variable tests/CMakeLists.txt uses for the
+# PDF unit tests. pdf-engine/ is only added when a vendored PDFium was found
+# (root CMakeLists), so on a machine that has not run
+# third_party/pdfium/fetch_pdfium.sh this target silently does not exist and
+# the fuzz build still produces fuzz_file_detection. That is the AUTO
+# contract, not a special case for fuzzing: a missing third-party binary must
+# never turn into a configure error for someone who did not ask for PDF.
+# ---------------------------------------------------------------------------
+if(UAPP_PDF_ENABLED)
+    add_executable(fuzz_pdf_reader fuzz_pdf_reader.cpp)
+
+    # uapp::pdf_reader only. Not uapp::file_detection, not uapp::storage — the
+    # same link-line guard rail tests/CMakeLists.txt applies to uapp_pdf_tests,
+    # for the same reason: "the PDF reader is bytes in, pixels out, with no
+    # storage and no document model behind it" should be checked by the build
+    # graph. It also proves the header boundary under the fuzz configuration —
+    # this harness includes only uapp/pdf/document.h and would fail to compile
+    # if a PDFium type had leaked into the public interface.
+    target_link_libraries(fuzz_pdf_reader
+        PRIVATE uapp::pdf_reader uapp::compiler_options)
+
+    target_compile_options(fuzz_pdf_reader PRIVATE -fsanitize=fuzzer)
+    target_link_options(fuzz_pdf_reader PRIVATE -fsanitize=fuzzer)
+else()
+    message(STATUS
+        "uapp: fuzz_pdf_reader        = OFF (no vendored PDFium; "
+        "run third_party/pdfium/fetch_pdfium.sh)")
+endif()
 
 # The seed corpus lives with the other fixtures (§6.2: "Seed corpora checked
 # into tests/fixtures/corpus/<target>/"), not next to this file, so the
@@ -64,4 +99,26 @@ target_link_options(fuzz_file_detection PRIVATE -fsanitize=fuzzer)
 # One length note: libFuzzer's default `-max_len` is 4096, which never reaches
 # the 8 KiB text probe or the 64 KiB EOCD backward scan. A run that means to
 # cover those needs `-max_len=131072`.
+#
+# ---------------------------------------------------------------------------
+# ...AND THE PDF ONE
+#
+#   mkdir -p /tmp/uapp-fuzz-pdf-work
+#   ./build-fuzz/bin/fuzz_pdf_reader -max_total_time=120 -print_final_stats=1 \
+#       -timeout=25 -rss_limit_mb=2048 \
+#       -artifact_prefix=/tmp/uapp-fuzz-artifacts/ \
+#       /tmp/uapp-fuzz-pdf-work tests/fixtures/corpus/fuzz_pdf_reader/
+#
+# `-timeout` and `-rss_limit_mb` are not decoration here the way they would be
+# for the detector: §6.2 says "timeout and OOM are findings, not noise — a PDF
+# that takes 30 s to parse is a DoS", and a PDF parser is the one component in
+# this repo where an input genuinely can ask for unbounded work or unbounded
+# memory. Leaving the limits at their defaults would let a decompression bomb
+# read as a slow iteration instead of as the finding it is.
+#
+# Expect a MUCH lower exec/s than fuzz_file_detection — hundreds, not tens of
+# thousands. Opening and rasterising a PDF is several orders of magnitude more
+# work than sniffing a magic number, and the vendored libpdfium is a prebuilt
+# dylib with no coverage instrumentation, so libFuzzer's feedback comes from
+# the wrapper alone. Both points are spelled out in fuzz_pdf_reader.cpp.
 # ---------------------------------------------------------------------------

@@ -24,11 +24,26 @@ namespace {
 
 FPDF_DOCUMENT as_document(void* handle) noexcept { return static_cast<FPDF_DOCUMENT>(handle); }
 
-/// Translate PDFium's process-global last-error into a Status.
+/// Translate PDFium's process-global last-error into a Status, for a failed
+/// DOCUMENT LOAD and for nothing else.
 ///
 /// MUST be called immediately after the failing PDFium call: the error is a
-/// global that the next call overwrites. Everything that can fail here reads
-/// it before doing anything else.
+/// global that the next call overwrites.
+///
+/// "And for nothing else" is a correctness constraint, not a style rule, and
+/// it was learned the hard way — see the comment on the page-level failure in
+/// `page_size` below. `FPDF_LoadMemDocument64` sets the last error on every
+/// failure path, so reading it there is meaningful. The page-level entry
+/// points make no such promise, and reading a global that nobody wrote yields
+/// whatever the *previous* call left behind.
+///
+/// Two arms below (`FPDF_ERR_SUCCESS` -> Internal, `FPDF_ERR_PAGE` ->
+/// PdfPageLoadFailed) produce a Status that is not in `open_buffer`'s
+/// documented return set. Both are believed unreachable from a document load,
+/// and that belief is checked rather than asserted: the oracle in
+/// `tests/fuzz/fuzz_pdf_reader.cpp` holds every `open_buffer` return against
+/// the documented set on every input, so if either becomes reachable the
+/// fuzzer says so instead of a caller finding out in production.
 Status status_from_pdfium_error() noexcept {
     switch (FPDF_GetLastError()) {
         case FPDF_ERR_SUCCESS:
@@ -213,7 +228,28 @@ Status Document::page_size(int index, PageSize& out) const {
     // MediaBox would make that layout pass parse the whole file.
     FS_SIZEF size{};
     if (FPDF_GetPageSizeByIndexF(as_document(handle_), index, &size) == 0) {
-        return status_from_pdfium_error();
+        // PdfPageLoadFailed unconditionally, NOT status_from_pdfium_error().
+        //
+        // This used to consult FPDF_GetLastError(), and that was a real bug —
+        // found by tests/fuzz/fuzz_pdf_reader on a PDF whose /Kids array
+        // names an object that does not exist. `FPDF_GetPageSizeByIndexF`
+        // does not set the last error when it cannot resolve a page, so the
+        // global still held FPDF_ERR_SUCCESS from the document load that
+        // succeeded a moment earlier, and the mapper turned "no error" into
+        // Status::Internal — a code status.h defines as "a bug in us, not in
+        // the caller's input" for a failure caused entirely by the caller's
+        // input. Attacker-supplied bytes could therefore make this module
+        // report an internal defect, which is both a lie to whoever reads the
+        // log and a way to poison an error-rate alert. It also put a status
+        // outside this function's documented set (Ok / PdfNotOpen /
+        // PdfPageNotFound / PdfPageLoadFailed) in front of callers switching
+        // on it.
+        //
+        // Status::PdfPageLoadFailed is 704, "index in range, but the page
+        // object is unusable" — which is exactly and only what a failure here
+        // means. Nothing is lost by not reading the global, because nothing
+        // wrote it.
+        return Status::PdfPageLoadFailed;
     }
 
     out.width_points  = static_cast<double>(size.width);
@@ -241,7 +277,12 @@ Status Document::render_page(int index, const RenderTarget& target) const {
     if (index < 0 || index >= page_count()) { return Status::PdfPageNotFound; }
 
     const ScopedPage page(as_document(handle_), index);
-    if (!page.valid()) { return status_from_pdfium_error(); }
+    // Same reasoning, same fix as page_size(): FPDF_LoadPage does not set the
+    // last error either, so consulting it here reported a stale document-load
+    // outcome — Status::Internal in the case the fuzzer found. An in-range
+    // index whose page will not load IS PdfPageLoadFailed, and that is in
+    // render_page's documented set.
+    if (!page.valid()) { return Status::PdfPageLoadFailed; }
 
     // THE ZERO-COPY POINT (SP-5 F-2). `target.pixels` is the caller's memory;
     // CreateEx wraps it instead of allocating, FPDF_RenderPageBitmap writes
