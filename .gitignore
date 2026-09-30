@@ -1,6 +1,7 @@
 # Build trees
 build/
 build-*/
+build_*/
 cmake-build-*/
 out/
 

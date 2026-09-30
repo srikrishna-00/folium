@@ -44,8 +44,34 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-option(UAPP_BUILD_TESTS       "Build unit tests"                         ON)
-option(UAPP_BUILD_TOOLS       "Build developer CLI / harness executables" ON)
+# Fuzzing is a SEPARATE build configuration, not a switch on this one — see
+# cmake/UappCompilerOptions.cmake for why (libFuzzer supplies `main`). Default
+# OFF; with it off, nothing below this line differs from before it existed.
+#
+#   cmake -S . -B build-fuzz -DUAPP_ENABLE_FUZZING=ON \
+#         -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang \
+#         -DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++
+#   cmake --build build-fuzz -j
+#   ./build-fuzz/bin/fuzz_file_detection -max_total_time=60 \
+#         tests/fixtures/corpus/fuzz_file_detection/
+#
+# (The explicit compiler is a macOS necessity, not a preference: Apple's
+# Command Line Tools clang ships no libFuzzer runtime. The configure step
+# says so if it is missing.)
+option(UAPP_ENABLE_FUZZING    "Build libFuzzer fuzz targets (ASan+UBSan)" OFF)
+
+# A fuzz build is not a test build. When fuzzing is on these default OFF so
+# `cmake --build build-fuzz` produces the library under test and the harness
+# and nothing else: the four test binaries and the CLI all have their own
+# `main`, none of them is what is being fuzzed, and instrumenting SQLite to
+# build them wastes minutes per iteration. Both remain overridable.
+set(uapp_aux_default ON)
+if(UAPP_ENABLE_FUZZING)
+    set(uapp_aux_default OFF)
+endif()
+
+option(UAPP_BUILD_TESTS       "Build unit tests"                         ${uapp_aux_default})
+option(UAPP_BUILD_TOOLS       "Build developer CLI / harness executables" ${uapp_aux_default})
 option(UAPP_ENABLE_SANITIZERS "Build with Address+UB sanitizers"         OFF)
 option(UAPP_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"       ON)
 
@@ -57,10 +83,20 @@ include(cmake/UappCompilerOptions.cmake)
 # FTS5 compiled in; the configure step below asserts that rather than assuming.
 # Vendoring the SQLite amalgamation + SQLCipher for reproducible mobile builds
 # is tracked for a later Phase 1 task, not done here.
-include(cmake/FindSQLite3Fts5.cmake)
+#
+# Skipped entirely in a fuzz build: the persistence stack is not on the
+# untrusted-input path being fuzzed, and probing for a system SQLite with FTS5
+# would make the fuzz configuration fail for a reason that has nothing to do
+# with fuzzing.
+if(NOT UAPP_ENABLE_FUZZING)
+    include(cmake/FindSQLite3Fts5.cmake)
+endif()
 
 add_subdirectory(core)
-add_subdirectory(storage)
+
+if(NOT UAPP_ENABLE_FUZZING)
+    add_subdirectory(storage)
+endif()
 
 # file-engine/ — spec section 8/9. Detection only so far. It is added after
 # core/ because it links uapp::core_common for Status and ObjectId, and it is
@@ -72,7 +108,17 @@ add_subdirectory(file-engine)
 # is load-bearing: libuapp_capi is the composition root that binds the abstract
 # NoteStore port to the concrete SQLite adapter, so uapp::storage_sqlite must
 # already be a defined target when its link line is evaluated.
-add_subdirectory(core/capi)
+if(NOT UAPP_ENABLE_FUZZING)
+    add_subdirectory(core/capi)
+endif()
+
+# tests/fuzz/ is added OUTSIDE the UAPP_BUILD_TESTS block on purpose. A fuzz
+# target is not a unit test — it has no pass/fail, it is never added to ctest,
+# and it is driven by a corpus rather than by assertions — so tying it to the
+# test switch would mean "turn tests off" silently turns fuzzing off too.
+if(UAPP_ENABLE_FUZZING)
+    add_subdirectory(tests/fuzz)
+endif()
 
 if(UAPP_BUILD_TOOLS)
     add_subdirectory(tools)
@@ -87,4 +133,5 @@ message(STATUS "uapp: build type          = ${CMAKE_BUILD_TYPE}")
 message(STATUS "uapp: tests               = ${UAPP_BUILD_TESTS}")
 message(STATUS "uapp: tools               = ${UAPP_BUILD_TOOLS}")
 message(STATUS "uapp: sanitizers          = ${UAPP_ENABLE_SANITIZERS}")
+message(STATUS "uapp: fuzzing             = ${UAPP_ENABLE_FUZZING}")
 message(STATUS "uapp: warnings-as-errors  = ${UAPP_WARNINGS_AS_ERRORS}")

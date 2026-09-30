@@ -104,7 +104,7 @@ that every file under `*/parsers/` has a corresponding target in `tests/fuzz/`.
 | `fuzz_xml` | XML bytes | **P0** | XXE, entity expansion, deep nesting |
 | `fuzz_tiff` | TIFF bytes | **P0** | Historically the most CVE-prone image format we handle |
 | `fuzz_jpeg`, `fuzz_png`, `fuzz_webp`, `fuzz_gif`, `fuzz_bmp` | image bytes | P0 | |
-| `fuzz_detect` | arbitrary bytes | **P0** | Must never crash on anything, by definition |
+| `fuzz_detect` | arbitrary bytes | **P0** | Must never crash on anything, by definition. **BUILT** — `tests/fuzz/fuzz_file_detection.cpp`; see §6.3 |
 | `fuzz_metadata` | EXIF/XMP/ID3 bytes | P1 | |
 | `fuzz_rtf`, `fuzz_html`, `fuzz_markdown`, `fuzz_epub`, `fuzz_svg` | format bytes | P1 | |
 | `fuzz_ocr_input` | image bytes → Tesseract | P1 | Third-party surface |
@@ -128,6 +128,131 @@ that every file under `*/parsers/` has a corresponding target in `tests/fuzz/`.
 - **Every crash becomes a regression test.** The reproducer is checked into
   `tests/fixtures/regressions/` with the issue id, and runs in the normal unit suite forever.
 - **Timeout and OOM are findings**, not noise. A PDF that takes 30 s to parse is a DoS.
+
+### 6.3 What is actually built today
+
+**One of the eighteen targets in §6.1 exists: `fuzz_detect`, as the executable
+`fuzz_file_detection`.** The other seventeen name parsers that are still empty Phase 0
+directories; a stub harness over a module that does not exist would turn this gate into a
+checklist of targets that fuzz nothing. This section says exactly what is real so the gap is
+visible rather than implied.
+
+| | |
+|---|---|
+| Harness | `tests/fuzz/fuzz_file_detection.cpp` |
+| Under test | `uapp::files::detect_buffer` and `describe_buffer` — the **buffer** entry points of `file-engine/detection` |
+| Seed corpus | `tests/fixtures/corpus/fuzz_file_detection/` (24 files) |
+| Build switch | `UAPP_ENABLE_FUZZING` (**default OFF**) |
+
+**Why this entry point.** `detect_buffer` takes raw bytes with no path and no filesystem: it is
+the untrusted-upload shape, it is what the mobile picker and the eventual HTTP upload handler
+call, and it is the first first-party code that ever touches an attacker-supplied file — before
+any parser is allowed to look at it. `detect_path` is deliberately **not** a target: it is a
+bounded-read wrapper isolated in one translation unit that fills a `FileSample` and hands it to
+this same engine, so fuzzing it would spend every cycle in `open(2)` re-testing this code
+through a slower door.
+
+#### Building and running it
+
+Fuzzing is a **third build configuration**, not a flag on the normal one, because libFuzzer
+supplies `main` — linking `-fsanitize=fuzzer` into the shared compiler posture would turn the
+CLI and all four test binaries into fuzzer drivers. What *is* applied project-wide under the
+switch is `-fsanitize=fuzzer-no-link,address,undefined`, which adds the coverage
+instrumentation libFuzzer steers by and leaves `main` alone; the fuzz target alone adds the
+runtime at link time. Instrumenting the library and not merely the harness is the point: a
+target built against an uninstrumented `uapp::file_detection` is a random byte generator with
+no feedback.
+
+```sh
+# configure — see the toolchain note below for why the compiler is named
+cmake -S . -B build-fuzz -DUAPP_ENABLE_FUZZING=ON \
+      -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang \
+      -DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++
+cmake --build build-fuzz -j
+
+# 60 s smoke run from the seed corpus (the per-PR cadence in §6.2).
+# The FIRST directory is written to — libFuzzer saves every input that reaches
+# new coverage into it — so it is scratch, and the checked-in seed set that
+# follows it is read-only. Pointing the smoke run straight at the repo corpus
+# would add a few hundred files to the working tree on every invocation.
+mkdir -p /tmp/uapp-fuzz-work
+./build-fuzz/bin/fuzz_file_detection -max_total_time=60 -print_final_stats=1 \
+    -artifact_prefix=/tmp/uapp-fuzz-artifacts/ \
+    /tmp/uapp-fuzz-work tests/fixtures/corpus/fuzz_file_detection/
+
+# longer run: same shape, bigger budget, and a length cap past the 64 KiB
+# EOCD scan (libFuzzer's default is 4096, which never reaches it)
+./build-fuzz/bin/fuzz_file_detection -max_total_time=3600 -max_len=131072 \
+    -artifact_prefix=/tmp/uapp-fuzz-artifacts/ \
+    /tmp/uapp-fuzz-work tests/fixtures/corpus/fuzz_file_detection/
+
+# replay a reproducer
+./build-fuzz/bin/fuzz_file_detection /tmp/uapp-fuzz-artifacts/crash-<sha1>
+```
+
+With the switch OFF nothing under `tests/fuzz/` is configured, parsed or compiled, and no
+sanitizer flag appears in `compile_commands.json`. With it ON, `UAPP_BUILD_TESTS` and
+`UAPP_BUILD_TOOLS` default OFF and the SQLite probe is skipped: a fuzz build produces the
+library under test and the harness, nothing else. No fuzz target is registered with ctest — a
+fuzz target has no pass/fail, it has a time budget.
+
+**Toolchain note (macOS).** Apple's Command Line Tools clang *accepts* `-fsanitize=fuzzer` but
+ships no `libclang_rt.fuzzer_osx.a`, so the flag compiles and the link fails. Upstream LLVM
+(`brew install llvm`) is required. The configure step link-probes for this and fails with that
+instruction rather than letting the build get several hundred files in before the linker
+complains.
+
+#### The oracle: crashes are not the only bug
+
+ASan and UBSan catch memory errors and UB. They do not catch a *self-contradictory verdict*,
+which for a detector is the likelier defect and is still a security finding, because callers
+gate on `confidence` and `extension_conflicts`. So every input is also checked against the
+invariants `detector.h` states in prose — among them: the filename can never set `format`
+(`ExtensionHintOnly`/`ExtensionOnly` must leave it `Unknown`); an identified format never
+carries `None` confidence; `magic_offset` is non-zero only for PDF and never points past the
+input; container flags never appear on a non-ZIP-family result; two calls on identical bytes
+produce identical results; and `describe_buffer` never disagrees with `detect_buffer`. Only
+invariants the public header actually promises are asserted — inventing a stricter rule than
+the contract would manufacture fake defects.
+
+#### Seed corpus
+
+24 hand-authored files, each a real file of its claimed format rather than a byte blob: a
+minimal but complete example of **every one of the ten formats detection currently
+implements** (PDF, PNG, JPEG, GIF87a, GIF89a, ZIP, DOCX, XLSX, PPTX, ODT, and ASCII/UTF-8/
+UTF-8-BOM/UTF-16-BOM text), plus the malformed shapes a byte mutator would take a very long
+time to construct: an OOXML package of an unrecognised family, an archive with no central
+directory, a bare `PK\x03\x04`, a truncated central directory, an EOCD pointing past EOF, a
+Zip64 sentinel, a 65534-entry count claim, a PDF behind a 300-byte preamble, a buffer with an
+embedded NUL, and an empty file.
+The ZIP-family seeds are byte-identical to what `tests/file_engine/zip_fixture.h` builds, so a
+fixture and its corpus entry cannot drift into describing different files.
+
+Per §15 only this minimised seed set lives in the repo; the evolved corpus from a long run
+belongs in object storage, and a run's survivors come back via `-merge=1`.
+
+#### Run record
+
+| Date | Build | Runs | Duration | exec/s | Coverage | Findings |
+|---|---|---|---|---|---|---|
+| 2026-09-30 | LLVM 23.1.2, Debug, ASan+UBSan | 2 928 476 | 121 s | 24 202 | — | none |
+| 2026-09-30 | continued, from evolved corpus | 2 166 152 | 121 s | 17 902 | 907 edges / 1 870 features | none |
+| 2026-09-30 | `-max_len=131072` | 2 247 966 | 121 s | 18 578 | 907 edges / 1 877 features | none |
+| 2026-09-30 | clean rebuild, seed corpus only (the documented 60 s smoke command, run verbatim) | 2 006 441 | 61 s | 32 892 | 906 edges / 1 740 features | none |
+
+**9 349 035 executions over 424 s: zero crashes, zero hangs (slowest unit < 1 s), zero
+sanitizer reports, zero oracle violations.** Corpus plateaued at 154 units and coverage stopped
+growing, so this is a saturated smoke run for this corpus and length cap — not a claim that the
+module is clean, which needs the ≥ 4 h nightly cadence in §6.2. The third run exists because
+libFuzzer's default 4096-byte cap never reaches the 8 KiB text-probe boundary or the 64 KiB
+EOCD backward scan; raising the cap added 7 features and no defects.
+
+The one bug this work did find was in the **corpus generator, not the product**: its
+central-directory record omitted the mod-date field, so the DOCX/XLSX/PPTX seeds were silently
+degrading to plain `zip` and seeding the fuzzer with three fewer real formats than intended.
+Caught by checking each seed's detected format before the first run, and fixed in the
+generator. Worth recording because a silently-wrong seed corpus is the failure mode that makes
+a fuzz run look fine while testing much less than it claims.
 
 ## 7. Sanitizers and static analysis
 

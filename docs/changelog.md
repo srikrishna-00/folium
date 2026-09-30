@@ -12,6 +12,90 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `fuzz_detect`: a real libFuzzer target over `file-engine/detection` (spec §29)
+
+Closes the gate the `file-engine/detection` entry below left open (`testing-strategy.md` §6:
+"a parser without a fuzz target does not merge"). It is the **first** fuzz target in the
+repository, and it fuzzes the **buffer** entry point — `detect_buffer` and `describe_buffer` —
+because that is the untrusted-upload shape: raw bytes, no path, no filesystem, no assumption
+of well-formedness. It is what the mobile picker and the eventual HTTP upload handler call,
+and the first first-party code that ever touches an attacker-supplied file.
+
+- **`tests/fuzz/fuzz_file_detection.cpp`** — `LLVMFuzzerTestOneInput` feeds the input bytes in
+  verbatim: no length prefix, no framing, no embedded control fields. That is a constraint,
+  not a shortcut — it means every corpus entry is a real file, a crash reproducer is directly
+  usable as a regression fixture, and nobody can later mistake a harness framing bug for a
+  detector bug. The filename, the one thing file bytes cannot carry, is supplied from a fixed
+  table indexed by the input's own first byte, so the advisory-hint ladder
+  (`extension_of` → registry lookup → conflict resolution) is exercised deterministically
+  without contaminating the corpus file format.
+- **An oracle, not just a crash check.** ASan/UBSan catch memory errors; they do not catch a
+  self-contradictory verdict, which for a detector is both likelier and still a security
+  finding, since callers gate on `confidence` and `extension_conflicts`. Every input is
+  additionally checked against the invariants `detector.h` states in prose — the filename can
+  never set `format`, an identified format never carries `None` confidence, `magic_offset` is
+  PDF-only and never past the input, container flags never appear on a non-ZIP result, two
+  calls on identical bytes agree, `describe_buffer` never contradicts `detect_buffer`. **Only
+  invariants the public header actually promises** are asserted; a stricter rule than the
+  contract would manufacture fake defects.
+- **`UAPP_ENABLE_FUZZING`, default OFF, a third build configuration rather than a flag on the
+  normal one.** libFuzzer supplies `main`, so `-fsanitize=fuzzer` cannot go into the shared
+  compiler posture without turning the CLI and all four test binaries into fuzzer drivers.
+  What is applied project-wide under the switch is `-fsanitize=fuzzer-no-link,address,
+  undefined` — the coverage instrumentation, with `main` left alone — and the fuzz target
+  alone adds the runtime at link. Instrumenting the *library* and not just the harness is the
+  point: a target built against an uninstrumented `uapp::file_detection` is a random byte
+  generator with no feedback. With the switch ON, tests and tools default OFF and the SQLite
+  probe is skipped, so a fuzz build produces the library under test and the harness and
+  nothing else. No fuzz target is registered with ctest: it has no pass/fail, it has a budget.
+- **A 24-file seed corpus** in `tests/fixtures/corpus/fuzz_file_detection/` (§6.2's location),
+  holding a minimal but genuinely valid example of **each of the ten formats detection
+  implements** plus the malformed shapes a mutator would take a long time to build — no
+  central directory, a truncated one, an EOCD pointing past EOF, a Zip64 sentinel, a
+  65534-entry claim, a bare `PK\x03\x04`, an unrecognised OOXML family, a PDF behind a
+  300-byte preamble, an empty file. The ZIP-family seeds are byte-identical to what
+  `tests/file_engine/zip_fixture.h` already builds, so fixture and corpus cannot drift apart.
+- **A configure-time guard rail for macOS.** Apple's Command Line Tools clang accepts
+  `-fsanitize=fuzzer` but ships no `libclang_rt.fuzzer_osx.a`. The configure step link-probes
+  and fails with the `brew install llvm` remedy rather than letting the build reach the linker
+  several hundred files later. This was not hypothetical — it is what this machine does.
+
+**The run, actually performed** (LLVM 23.1.2, Debug, ASan+UBSan; full record in
+`testing-strategy.md` §6.3): three bounded runs of 121 s each — 2 928 476, 2 166 152 and
+2 247 966 executions at 24 202 / 17 902 / 18 578 exec/s — plus a 61 s re-run of the documented
+smoke command verbatim against a clean rebuild (2 006 441 executions at 32 892 exec/s).
+**9 349 035 executions over 424 s: zero crashes, zero hangs, zero sanitizer reports, zero
+oracle violations.** Coverage settled at
+907 edges / 1 877 features with the corpus plateaued at 154 units, so this is a *saturated
+smoke run for this corpus and length cap* — not a claim that the module is clean, which needs
+the ≥ 4 h nightly cadence §6.2 specifies. The third run raised libFuzzer's default 4096-byte
+cap to 128 KiB, because the default never reaches the 8 KiB text-probe boundary or the 64 KiB
+EOCD backward scan; it added 7 features and no defects.
+
+**No product defect was found, and none is claimed.** That is a plausible result rather than a
+surprising one: `ByteSpan` was built so that no accessor *can* read out of range and the ZIP
+walk is capped and overflow-guarded, which is the property a first fuzz run is supposed to
+confirm. The one bug the work did surface was in the **corpus generator**, not the product —
+its central-directory record omitted the mod-date field, so the DOCX/XLSX/PPTX seeds were
+silently degrading to plain `zip` and the fuzzer was being seeded with three fewer real
+formats than intended. Caught by asserting each seed's detected format before the first run;
+fixed in the generator, not in the detector. Recorded because a silently-wrong corpus is
+exactly the failure mode that makes a fuzz run look fine while testing much less than it says.
+
+**Verification.** The fuzz build configures and builds clean at `-Werror` under LLVM 23. The
+normal build is untouched: a from-scratch `cmake -S . -B build_check && cmake --build
+build_check && ctest` with `UAPP_ENABLE_FUZZING` at its default OFF gives **ctest 9/9** and the
+same suite counts as before — notes 42, blocks 36, file_engine 65, capi 17 — with no
+`-fsanitize` flag anywhere in `compile_commands.json`.
+
+**NOT IMPLEMENTED**: the other seventeen targets in §6.1 (`fuzz_pdf_parse`, `fuzz_zip`,
+`fuzz_xml`, `fuzz_sync_delta`, …). Each names a parser that is still an empty Phase 0
+directory; a stub harness over a module that does not exist would turn the merge gate into a
+checklist of targets that fuzz nothing. Also not done: the CI wiring for the §6.2 cadence
+(60 s per PR, ≥ 4 h nightly, 72 h release gate) — there is no CI pipeline in this repo yet;
+structure-aware mutation for the OOXML family; and MSan, which §6.2 requires to run separately
+and which needs an instrumented libc++ this repo does not build.
+
 ### Added — `file-engine/detection`: real file-type detection (spec §8/§9)
 
 The foundational answer to "what is this file, and what may we do with it?", which the PDF
@@ -115,10 +199,7 @@ faked — the `block_type_not_implemented_reason()` precedent):
   with.
 - **`FileLocation::Kind::PlatformUri` cannot be resolved**; that needs the platform vtable.
   Carried, not dereferenced.
-- **No fuzz target yet**, though `detect_sample` was deliberately kept pure, `noexcept` and
-  I/O-free (all filesystem code is isolated in `detector_path.cpp`) precisely so that adding
-  `LLVMFuzzerTestOneInput` is a few lines. `testing-strategy.md` §6 requires one before this
-  ships.
+- ~~**No fuzz target yet**~~ — **closed below**; `detect_buffer` now has one.
 
 **One edit to `core/capi`, which this change was otherwise to leave alone** — the same
 tripwire, and the same resolution, as the `core/blocks` change below. Adding the four 6xx
