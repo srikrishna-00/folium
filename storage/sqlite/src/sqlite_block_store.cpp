@@ -21,6 +21,8 @@
 #include "uapp/blocks/block_store.h"
 #include "uapp/blocks/page.h"
 #include "uapp/object_id.h"
+#include "uapp/search/search_result.h"
+#include "search_index_sql.h"
 #include "sqlite_raii.h"
 
 namespace uapp::storage::sqlite {
@@ -63,10 +65,22 @@ using blocks::PageId;
 //    type like `table` or `image` lands -- is a versioned migration rather
 //    than a rewrite. core/blocks/block.h documents that trigger point.
 //
-// NOT IMPLEMENTED here: full-text indexing of block text. The note store's
-// `note_fts` has no counterpart yet; blocks need a `text_cache` fed into FTS5
-// with the same one-transaction discipline, and wiring it before the block
-// model settled would mean rewriting it twice.
+// FULL-TEXT INDEXING (was NOT IMPLEMENTED; now is)
+// ---------------------------------------------------------------------------
+// Every mutating method below also maintains the SHARED unified index defined
+// in search_index_sql.h, inside its own existing transaction -- the same
+// one-transaction discipline sqlite_note_store.cpp already used for
+// `note_fts`, so a block that is stored but not indexed is not a reachable
+// state. Granularity is per-BLOCK (one index entry per text-bearing block,
+// carrying the page id as its container) plus one per-PAGE entry for the page
+// TITLE, which lives in no block. The reasoning for block-level over
+// page-level is argued in search_index_sql.h, "DESIGN DECISION 2".
+//
+// There is deliberately still no `text_cache` COLUMN on `block`: the text is
+// already in `block.text`, and a denormalised copy would be derived data the
+// store has to keep consistent with its own source for no reader that needs
+// it. database-design.md section 11 lists exactly that drift
+// ("`text_cache` drifts from `content`") as a known integrity hazard.
 // ---------------------------------------------------------------------------
 constexpr char kSchemaSql[] =
     "CREATE TABLE IF NOT EXISTS schema_meta ("
@@ -338,6 +352,20 @@ private:
                                         const BlockId& exclude) noexcept;
     [[nodiscard]] Status touch_page(const PageId& page_id, std::int64_t now_ms) noexcept;
 
+    /// Bring the unified index entry for one block in line with `content`.
+    ///
+    /// A block whose plain text is EMPTY gets no entry -- it is erased if one
+    /// exists. Two cases reach that: a DividerBlock, which is pure structure
+    /// and has nothing to find; and a paragraph the user cleared. Keeping an
+    /// empty row would make the index larger, make `entry_count` meaningless
+    /// as a staleness check, and -- because bm25 weights by average row
+    /// length -- quietly skew the ranking of every real hit.
+    ///
+    /// MUST be called inside the caller's transaction.
+    [[nodiscard]] Status reindex_block(const BlockId& id,
+                                       const PageId& page_id,
+                                       const BlockContent& content) noexcept;
+
     Connection conn_;
     bool       read_only_ = false;
 };
@@ -546,6 +574,21 @@ Status SqliteBlockStore::touch_page(const PageId& page_id, std::int64_t now_ms) 
     return Status::Ok;
 }
 
+Status SqliteBlockStore::reindex_block(const BlockId& id,
+                                       const PageId& page_id,
+                                       const BlockContent& content) noexcept {
+    const std::string_view text = blocks::block_plain_text(content);
+    if (text.empty()) {
+        return search_index::erase(conn_.get(), search::SourceKind::Block, id.bytes());
+    }
+    // The block's own `title` column is empty: a block has no title, and
+    // putting the page's title here would duplicate the page's own entry into
+    // every block on the page -- which would both bloat the index and make a
+    // page-title query return every block on that page.
+    return search_index::put(conn_.get(), search::SourceKind::Block, id.bytes(),
+                             &page_id.bytes(), std::string_view(), text);
+}
+
 // --- pages -----------------------------------------------------------------
 
 Status SqliteBlockStore::create_page(const Page& page) noexcept {
@@ -556,22 +599,43 @@ Status SqliteBlockStore::create_page(const Page& page) noexcept {
     if (const Status s = blocks::validate_page_metadata(page); !is_ok(s)) { return s; }
     if (!page.blocks.empty()) { return Status::InvalidArgument; }
 
-    Statement stmt;
-    if (const Status s = stmt.prepare(
-            conn_.get(),
-            "INSERT INTO page(id, title, created_at_ms, modified_at_ms) "
-            "VALUES(?1, ?2, ?3, ?4);");
+    // This method used to be a single INSERT and needed no transaction. It
+    // writes two rows now (content + index), so it gets one: a page that
+    // exists but is unfindable by title is exactly the half-applied state the
+    // BlockStore contract rules out.
+    Transaction txn;
+    if (const Status s = txn.begin(conn_.get()); !is_ok(s)) { return s; }
+
+    {
+        Statement stmt;
+        if (const Status s = stmt.prepare(
+                conn_.get(),
+                "INSERT INTO page(id, title, created_at_ms, modified_at_ms) "
+                "VALUES(?1, ?2, ?3, ?4);");
+            !is_ok(s)) {
+            return s;
+        }
+        if (const Status s = bind_id(stmt, 1, page.id.bytes());       !is_ok(s)) { return s; }
+        if (const Status s = stmt.bind_text(2, page.title);           !is_ok(s)) { return s; }
+        if (const Status s = stmt.bind_int64(3, page.created_at_ms);  !is_ok(s)) { return s; }
+        if (const Status s = stmt.bind_int64(4, page.modified_at_ms); !is_ok(s)) { return s; }
+
+        const int rc = sqlite3_step(stmt.get());
+        if (rc != SQLITE_DONE) { return write_status_for(rc); }
+    }
+
+    // An empty title is a legal, common state ("Untitled"), and it is indexed
+    // as an empty row anyway rather than skipped: unlike a block, a page is
+    // always openable, so its entry is also what every Block hit on it joins
+    // to for a display title. Skipping it would make block results titleless.
+    if (const Status s = search_index::put(conn_.get(), search::SourceKind::Page,
+                                           page.id.bytes(), nullptr,
+                                           page.title, std::string_view());
         !is_ok(s)) {
         return s;
     }
-    if (const Status s = bind_id(stmt, 1, page.id.bytes());            !is_ok(s)) { return s; }
-    if (const Status s = stmt.bind_text(2, page.title);                !is_ok(s)) { return s; }
-    if (const Status s = stmt.bind_int64(3, page.created_at_ms);       !is_ok(s)) { return s; }
-    if (const Status s = stmt.bind_int64(4, page.modified_at_ms);      !is_ok(s)) { return s; }
 
-    const int rc = sqlite3_step(stmt.get());
-    if (rc != SQLITE_DONE) { return write_status_for(rc); }
-    return Status::Ok;
+    return txn.commit();
 }
 
 Status SqliteBlockStore::get_page(const PageId& id, Page& out) const noexcept {
@@ -748,6 +812,17 @@ Status SqliteBlockStore::set_page_title(const PageId& id,
     const int rc = sqlite3_step(stmt.get());
     if (rc != SQLITE_DONE) { return write_status_for(rc); }
 
+    // `put` REPLACES the row, so the old title stops matching in the same
+    // transaction that stops it being the title. The block entries on this
+    // page are untouched: they join to this row for their display title, so
+    // renaming a page relabels its hits without rewriting any of them.
+    if (const Status s = search_index::put(conn_.get(), search::SourceKind::Page,
+                                           id.bytes(), nullptr,
+                                           title, std::string_view());
+        !is_ok(s)) {
+        return s;
+    }
+
     return txn.commit();
 }
 
@@ -779,6 +854,17 @@ Status SqliteBlockStore::delete_page(const PageId& id) noexcept {
         if (const Status s = bind_id(stmt, 1, id.bytes()); !is_ok(s)) { return s; }
         const int rc = sqlite3_step(stmt.get());
         if (rc != SQLITE_DONE) { return write_status_for(rc); }
+    }
+
+    // One statement pair drops the page's own entry AND every block entry
+    // whose container is this page -- addressed by container_id, so it does
+    // not depend on the `block` rows that were just deleted above, and does
+    // not degrade into 50 000 individual deletes on a large page.
+    if (const Status s = search_index::erase_container(conn_.get(),
+                                                       search::SourceKind::Page,
+                                                       id.bytes());
+        !is_ok(s)) {
+        return s;
     }
 
     return txn.commit();
@@ -885,7 +971,8 @@ Status SqliteBlockStore::insert_block(const PageId& page_id,
         if (rc != SQLITE_DONE) { return write_status_for(rc); }
     }
 
-    if (const Status s = touch_page(page_id, now_ms); !is_ok(s)) { return s; }
+    if (const Status s = reindex_block(new_id, page_id, content); !is_ok(s)) { return s; }
+    if (const Status s = touch_page(page_id, now_ms);             !is_ok(s)) { return s; }
     return txn.commit();
 }
 
@@ -981,7 +1068,11 @@ Status SqliteBlockStore::update_block(const BlockId& id,
         if (rc != SQLITE_DONE) { return write_status_for(rc); }
     }
 
-    if (const Status s = touch_page(row.page_id, now_ms); !is_ok(s)) { return s; }
+    // Replaces the entry, so the PREVIOUS text stops matching here rather
+    // than lingering as a stale hit. Also handles a type change that removes
+    // the text entirely (paragraph -> divider): reindex_block erases.
+    if (const Status s = reindex_block(id, row.page_id, content); !is_ok(s)) { return s; }
+    if (const Status s = touch_page(row.page_id, now_ms);         !is_ok(s)) { return s; }
     return txn.commit();
 }
 
@@ -995,6 +1086,16 @@ Status SqliteBlockStore::delete_block(const BlockId& id, std::int64_t now_ms) no
 
     BlockRow row;
     if (const Status s = load_row(id, row); !is_ok(s)) { return s; }
+
+    // Index entries for the whole subtree go FIRST, because finding them
+    // means walking `block.parent_id` -- which the next statement is about to
+    // delete. Doing it the other way round would silently leave every
+    // descendant's text matchable forever, and nothing would ever fail.
+    if (const Status s = search_index::erase_block_subtree(conn_.get(), id.bytes(),
+                                                           kDepthProbeCap);
+        !is_ok(s)) {
+        return s;
+    }
 
     // Delete the block and its whole subtree in one statement. `UNION` (not
     // UNION ALL) plus the depth bound is what keeps this terminating on a
@@ -1124,6 +1225,14 @@ Status SqliteBlockStore::move_block(const BlockId& id,
         if (rc != SQLITE_DONE) { return write_status_for(rc); }
     }
 
+    // NO index write here, and that is correct rather than an omission: a move
+    // changes `parent_id` and `sort_index`, and neither is in the index. The
+    // index addresses a block by (kind, block id) and stores its page as the
+    // container; a cross-page move WOULD change the container, which is
+    // exactly why it is rejected above as NOT IMPLEMENTED. When it lands, the
+    // subtree's container entries have to be rewritten with it -- see
+    // search_index::put, which already rewrites container_id for that reason.
+
     if (const Status s = touch_page(row.page_id, now_ms); !is_ok(s)) { return s; }
     return txn.commit();
 }
@@ -1174,7 +1283,12 @@ Status apply_schema(sqlite3* db) noexcept {
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         return Status::StoreSchemaFailed;
     }
-    return Status::Ok;
+
+    // The unified index lives in the same file and is created by whichever
+    // adapter opens it first; `IF NOT EXISTS` makes the second a no-op. The
+    // DDL is one shared constant (search_index_sql.cpp) so the note store and
+    // this one cannot disagree about the shape of the table they share.
+    return search_index::apply_schema(db);
 }
 
 /// Refuse a database written by a newer build: opening it read-write would
@@ -1187,11 +1301,11 @@ Status check_schema_version(sqlite3* db) noexcept {
         return Status::Ok;  // table absent => fresh database, not an error
     }
     const int rc = sqlite3_step(stmt.get());
-    if (rc == SQLITE_DONE) { return Status::Ok; }
+    if (rc == SQLITE_DONE) { return search_index::check_schema_version(db); }
     if (rc != SQLITE_ROW)  { return Status::StoreSchemaFailed; }
 
-    return stmt.column_int64(0) > kBlockSchemaVersion ? Status::StoreSchemaFailed
-                                                      : Status::Ok;
+    if (stmt.column_int64(0) > kBlockSchemaVersion) { return Status::StoreSchemaFailed; }
+    return search_index::check_schema_version(db);
 }
 
 }  // namespace

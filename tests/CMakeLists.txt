@@ -61,6 +61,43 @@ add_test(NAME uapp.notes.cli_demo
 set_tests_properties(uapp.notes.unit uapp.notes.cli_demo PROPERTIES TIMEOUT 120)
 
 # ---------------------------------------------------------------------------
+# core/search + storage/sqlite — the UNIFIED search layer (spec section 16).
+#
+# A separate executable, and the one test binary that deliberately links BOTH
+# domains: proving that one query returns correctly-typed hits from notes AND
+# from pages/blocks is only possible with both stores in the same process,
+# writing to the same database file. (It names uapp::storage_sqlite only;
+# core_notes, core_blocks and core_search all arrive through it PUBLIC-ly.)
+#
+# Unlike the per-store suites, every case here needs a REAL FILE: two
+# ":memory:" opens are two PRIVATE databases, so a note store and a block
+# store on ":memory:" could never see each other's index rows. The scratch
+# files live in a TempDir that removes itself, so nothing is written outside
+# the system temp directory and nothing is left behind.
+#
+# Four CTest entries over one binary, split by name filter, because the four
+# failure modes mean different things: "cross-type search is wrong", "an edit
+# left a stale hit behind", "a delete left a hit behind", and "a hostile query
+# got through". The last three are the ways a search index rots silently.
+# ---------------------------------------------------------------------------
+add_executable(uapp_search_tests
+    support/test_main.cpp
+    search/unified_search_test.cpp)
+
+target_include_directories(uapp_search_tests PRIVATE support)
+
+target_link_libraries(uapp_search_tests
+    PRIVATE uapp::storage_sqlite uapp::compiler_options)
+
+add_test(NAME uapp.search.unit    COMMAND uapp_search_tests)
+add_test(NAME uapp.search.edits   COMMAND uapp_search_tests "editing")
+add_test(NAME uapp.search.deletes COMMAND uapp_search_tests "deleting")
+add_test(NAME uapp.search.hostile COMMAND uapp_search_tests "hostile")
+
+set_tests_properties(uapp.search.unit uapp.search.edits uapp.search.deletes
+                     uapp.search.hostile PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
 # file-engine/detection — spec section 8/9 file-type detection.
 #
 # A third separate executable, and the most isolated of them: it links ONLY

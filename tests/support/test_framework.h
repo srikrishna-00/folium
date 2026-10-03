@@ -145,6 +145,19 @@ inline int run_all(const char* filter) {
         }                                                                             \
     } while (false)
 
+/// Fatal, with detail. Same as UAPP_REQUIRE but prints a computed message --
+/// needed wherever the interesting information is *what was actually there*
+/// (a result list, a count) rather than the expression that failed.
+#define UAPP_REQUIRE_MSG(cond, detail)                                                \
+    do {                                                                              \
+        if (!(cond)) {                                                                \
+            ::uapp::test::report_failure(uapp_test_result, __FILE__, __LINE__,         \
+                                         #cond, std::string(detail));                  \
+            uapp_test_result.aborted = true;                                           \
+            return;                                                                    \
+        }                                                                             \
+    } while (false)
+
 /// Assert an exact uapp::Status, printing both codes on mismatch. Fatal.
 #define UAPP_REQUIRE_STATUS(expr, expected)                                           \
     do {                                                                              \

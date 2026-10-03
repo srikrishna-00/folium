@@ -12,6 +12,269 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `core/search`: one unified full-text search across notes and pages/blocks (spec §16, Phase 9)
+
+Spec §16 asks for one search over "Notes, Pages, PDFs, DOCX, Images through OCR, scanned
+documents, file names, metadata, databases", and for it to "work offline for locally available
+data". Before this change the product had **per-store** search only: `notes` had a working FTS5
+index and `NoteStore::search`, while `sqlite_block_store.cpp` carried an explicit
+`NOT IMPLEMENTED: full-text indexing of block text`. There was no query that could see both.
+This change closes that: **one query string, results from notes and from pages/blocks, each hit
+self-describing about which kind of object it is and which ids open it**. Offline by
+construction — it is FTS5 in the local SQLite file, with no network path anywhere in it.
+
+Scope is deliberately the two content models that exist. §16's items 3–6 and its PDF/DOCX/OCR
+source kinds are listed under **NOT IMPLEMENTED** below, with reasons.
+
+#### The design decision: ONE shared FTS5 table, not two tables merged in the application
+
+The two candidate shapes were (a) a single index table that every content writer writes into,
+addressed by `source kind + source id + container id`, and (b) a second `block_fts` beside the
+existing `note_fts`, queried in parallel and merged in C++. **(a)**, for a reason that is not
+about convenience:
+
+> **bm25 scores from two different FTS5 tables are not comparable.**
+
+`bm25()` is derived from *that index's* corpus statistics — row count, average row length,
+per-term document frequency. A note corpus and a block corpus have wildly different average row
+lengths (a note body may be 4 MiB; a paragraph block is a sentence), so the same term scores
+differently in each. Merging two such lists means inventing a fusion heuristic — score
+normalisation, or reciprocal-rank fusion — and then owning its calibration forever, with no
+ground truth to calibrate against. With one table, cross-kind ranking is a single
+`ORDER BY bm25(...)` over one set of statistics: correct by construction rather than tuned.
+Secondary but real: one table is one tokenizer configuration, which matters when the ICU/CJK
+tokenizer lands (`database-design.md` §3.9 tracks it) — two tables is two places to forget.
+
+This is also the shape `database-design.md` §3.9 already specified (`fts_content` with
+`object_kind` / `object_id` columns), so the decision is a follow-through, not a new direction.
+
+**One deviation from that sketch, argued rather than assumed:** §3.9 puts the ids inside the
+FTS5 table as `UNINDEXED` columns. They are split out here into an ordinary `search_entry`
+table joined to `search_fts` by rowid — exactly as `note` / `note_fts` already are. An
+`UNINDEXED` FTS5 column can carry neither a `CHECK` constraint nor an index, and index
+*maintenance* is entirely by id ("replace the row for block X", "drop everything whose
+container is page Y"); against `UNINDEXED` columns each of those is a full scan of the index,
+and with `search_entry` each is a B-tree lookup (`UNIQUE(source_kind, source_id)`,
+`ix_search_entry_container`). It also lets the id columns carry the same `length(id) = 16`
+CHECK that `note` and `block` already do (spec §28).
+
+#### The granularity decision: BLOCK-level, not page-level
+
+A page could be one index row holding all of its blocks' text concatenated. That is simpler and
+it is wrong here, for three reasons:
+
+1. **Write amplification.** A page holds up to `kMaxBlocksPerPage` (50 000) blocks. Editing one
+   paragraph would mean re-reading the page, re-concatenating it and rewriting one FTS row
+   covering every block — O(page) work inside the write transaction on every edit. Block-level
+   rows make the same edit O(1).
+2. **The result would not be actionable.** `snippet()` over a concatenated blob says the match
+   is "somewhere on page Y" with no way to map the offset back to a block id. A user searching
+   a 400-block page then finds the match by eye. Block-level rows let a hit carry **both** the
+   block id (where to scroll) and the page id (what to open), which is what
+   `search::SearchResult` exposes and what `tests/search/unified_search_test.cpp` asserts.
+3. **Deletes.** Removing one block from a page-level row means rebuilding that row from the
+   surviving blocks. Removing a block row is a delete.
+
+Page **titles** are indexed too, as their own `SourceKind::Page` row: a page title is in no
+block, so without it searching for a page by name would silently fail. A block hit joins to
+that row for its display title, which is why renaming a page relabels all of its hits without
+rewriting any of them (asserted).
+
+**The cost, stated plainly:** each row is matched independently, so a two-term query whose terms
+sit in two *different* blocks of one page does not match that page. (It does match a note, whose
+title and body are one row.) The fix — a page-level roll-up row *in addition to* the block rows
+— reintroduces exactly the write amplification above and is **NOT IMPLEMENTED**; see the list
+below.
+
+#### Index maintenance: in the content writer's transaction, never a catch-up pass
+
+`database-design.md` principle 7 is "index and content commit together"; §3.9 adds that "a
+separate indexer thread that 'catches up' is how search silently rots". So the port
+(`core/search/search_index.h`) is **read-only by design** — there is no `index()` or `reindex()`
+method a caller could forget to call. The only way into the index is to store a note, page or
+block, and every one of those paths writes its index row inside the transaction it already had:
+
+- `sqlite_note_store.cpp` — `insert` / `update` / `remove`, following the precedent it already
+  set for `note_fts`.
+- `sqlite_block_store.cpp` — `create_page` (which gained a transaction: it was a single INSERT
+  and now writes two rows), `set_page_title`, `delete_page`, `insert_block`, `update_block`,
+  `delete_block`. `move_block` deliberately writes nothing: a move changes `parent_id` and
+  `sort_index`, neither of which is in the index, and the one thing it *would* change — the
+  container, on a cross-page move — is the case the block store already rejects as
+  NOT IMPLEMENTED.
+
+Two subtleties that are load-bearing rather than incidental, each with a mutation-tested
+regression case:
+
+- **Subtree deletes index-first.** `delete_block` cascades to the whole subtree, and finding
+  those index rows means walking `block.parent_id` — which the content delete is about to
+  remove. Running the index walk second would leave every descendant's text matchable forever
+  and *nothing would report an error*.
+- **Within a delete, FTS rows before addressing rows.** The two tables are joined by rowid and
+  SQLite reuses the rowids of deleted rows. Deleting the addressing row first orphans the FTS
+  row; the orphan is invisible to readers (the query INNER JOINs `search_entry`) but sits on a
+  rowid the next insert is handed, so the deleted object's text comes back attached to a
+  different object's entry. Both orderings were verified by inverting them and watching the
+  suite go red.
+
+A block whose plain text is empty — a `DividerBlock`, or a paragraph the user cleared — gets no
+entry at all and is erased if it had one. Keeping empty rows would inflate the index, make
+`entry_count` useless as a staleness check, and skew bm25's average-row-length weighting for
+every real hit.
+
+#### Query interface
+
+`search::SearchIndex::query(query_text, limit, out)` returns ranked `SearchResult`s carrying:
+the `SourceKind` tag (`note` / `page` / `block`), `source_id`, `container_id` (the page, for a
+block), the containing object's `title`, a `snippet` with matched terms delimited by `[` `]`,
+and a `rank`. `snippet()`'s column argument is `-1` ("the leftmost column that matched"), which
+is what lets one statement serve all three kinds — a page entry has text only in `title`, a
+block only in `body` — instead of a per-kind query returning empty snippets for two kinds out
+of three.
+
+`core/search` links `uapp::core_common` **and nothing else** — not `core_notes`, not
+`core_blocks`. A hit is described by a source-kind tag plus the shared 16-byte `ObjectId`, so
+the search layer does not link the domains it searches; otherwise every future source kind
+(PDF page, OCR region, file name) would add one more domain dependency until search linked the
+whole product. The link line enforces that, not a comment.
+
+**Query safety reuses the existing discipline rather than reinventing it.** Raw user text goes
+through the same `build_fts5_match_expression` allow-list builder (`fts_query.cpp`) that
+`NoteStore::search` already uses: word bytes only, each surviving term emitted as a
+double-quoted FTS5 string, ANDed, last term prefix-matched. A `static_assert` ties
+`search::kMaxQueryBytes` to `notes::kMaxQueryBytes` so the two caps cannot drift. The hostile
+input test drives the *fts_query* corpus **end to end through the unified port** — the point
+being not that the builder is safe (that was already proved in isolation) but that the new layer
+did not route around it.
+
+#### Unified search requires the stores to share one database file
+
+There is one index table, so a query sees notes **and** pages/blocks only when the note store,
+the block store and the index are opened on the same `path`. That is `architecture.md` §3
+Revision 2 ("there is exactly one persistence port … document, file, search, AI-metadata and
+sync modules all go through it"), not a shortcut: the two stores' tables are disjoint and they
+version themselves under different `schema_meta` keys, so they already coexist in one file.
+Opened on *different* files, each file holds an index over its own content and a query returns
+that file's hits — which degrades honestly rather than returning half an answer.
+
+`":memory:"` **does not work for unified search**, and the header says so loudly: each
+`sqlite3_open` of `":memory:"` is a private database, so two stores on `":memory:"` cannot see
+each other's rows and the symptom is zero results with no error. The pre-existing per-store
+suites keep using `":memory:"` unchanged (each gets its own index, covering its own content);
+the unified suite uses one real file per case in a self-removing `TempDir`.
+
+#### Files
+
+- `core/search/include/uapp/search/{search_result.h,search_index.h}`, `src/search_result.cpp`,
+  `CMakeLists.txt` — the port and its value type.
+- `storage/sqlite/src/search_index_sql.{h,cpp}` — the shared DDL and the maintenance
+  primitives (`put` / `erase` / `erase_container` / `erase_block_subtree` / `entry_count`),
+  internal to the target. Free functions taking a `sqlite3*` on purpose: the caller must
+  already be inside its own content transaction, and handing them a connection rather than an
+  object makes that relationship visible at every call site.
+- `storage/sqlite/{include/uapp/storage/sqlite/sqlite_search_index.h,src/sqlite_search_index.cpp}`
+  — the read side. Opens read-only by default (the port cannot write, so the connection holds
+  no write permission) and *probes* for the index tables at open, so pointing it at a path no
+  store ever wrote is `StoreOpenFailed` rather than "no results" forever.
+- `tests/search/unified_search_test.cpp`, `tests/CMakeLists.txt` — the suite and four CTest
+  entries (`uapp.search.unit` / `.edits` / `.deletes` / `.hostile`).
+- `tests/support/test_framework.h` — added `UAPP_REQUIRE_MSG` (fatal, with a computed detail
+  string), needed wherever the interesting information is *what was actually there* — a result
+  list, a count — rather than the expression that failed.
+- `storage/sqlite/src/sqlite_{note,block}_store.cpp` — index maintenance wired into the
+  existing transactions; the block store's `NOT IMPLEMENTED: full-text indexing` comment is
+  replaced by the reasoning for what it now does.
+
+#### Verification
+
+```text
+$ cmake -S . -B build_search -DCMAKE_BUILD_TYPE=Debug && cmake --build build_search -j8
+[100%] Built target uapp_capi_tests          # clean under -Werror -fno-exceptions -fno-rtti
+
+$ ./build_search/bin/uapp_search_tests
+22 passed, 0 failed
+
+$ ctest --test-dir build_search --output-on-failure
+100% tests passed out of 16
+
+$ cmake -S . -B build_search_asan -DCMAKE_BUILD_TYPE=Debug -DUAPP_ENABLE_SANITIZERS=ON
+$ UBSAN_OPTIONS=print_stacktrace=1 ctest --test-dir build_search_asan --output-on-failure
+100% tests passed out of 16          # ASan + UBSan, no findings
+```
+
+Unchanged counts for every suite whose storage this work touches: **notes 42, blocks 36** (both
+still green with the extra index writes inside their transactions), file_engine 65, capi 17,
+pdf 23. The 22 new cases cover: a query matching only a note; only a block; only a page title;
+one matching **both** stores with each hit correctly typed and both ids present; rank ordering
+and the `limit` contract; editing a note, editing a block and renaming a page each replacing
+what search finds with **no stale hit**; a type change to `Divider` removing the entry;
+deleting a note, a block **and its subtree**, and a whole page; delete-then-re-add not
+resurrecting old text (the rowid-reuse case); a non-matching query returning `Ok` + empty; an
+empty/punctuation-only query returning `SEARCH_QUERY_EMPTY` *distinctly* from "no results"; 20
+hostile queries (`NEAR(`, unbalanced quotes, `col:value`, `'; DROP TABLE search_entry; --`,
+quote-escape attempts, control bytes) proving the injection surface stays closed and the index
+survives; an oversized query rejected rather than truncated; an embedded NUL; survival across
+close/reopen; and the read-only-open-with-no-index error.
+
+Two **mutation checks** were run to prove the suite is not vacuous rather than assuming it:
+removing the subtree index-erase, and inverting the FTS-rows-first delete ordering. Each turned
+the suite red at the specific case that claims to cover it.
+
+#### NOT IMPLEMENTED (spec §5) — deferred, with reasons
+
+- **§16.3 Fuzzy search.** Needs the trigram auxiliary table over titles plus a bounded
+  Levenshtein rescore of the top-N FTS candidates that `database-design.md` §3.9 specifies. Out
+  of scope for this run by instruction; the §3.9 note that fuzzy matching is **not** attempted
+  over full body text still stands as the design.
+- **§16.4 Metadata search.** There is no metadata to search yet — no tags, no properties, no
+  workspaces, and `page` has no `workspace_id` column. A metadata query language over fields
+  that do not exist would be fiction.
+- **§16.5 Semantic search and §16.6 AI-powered search.** No embeddings, no vector store, no
+  `embedding` / `embedding_meta` tables, no RRF hybrid fusion. Explicitly out of scope this
+  run; `architecture.md` §6 sketches the eventual
+  `search/hybrid (FTS5 BM25 ∪ vector top-k → RRF fusion)`, and ADR-level sign-off on an
+  on-device model is a prerequisite rather than a detail.
+- **Search over PDF, DOCX, images-through-OCR, scanned documents, file names.** Nothing to
+  index: `file-engine/detection` produces a `File` value and extracts no text content from
+  anything, and `pdf-engine/reader` is viewing-only with no text extraction. The index schema
+  needs no change to accept them — a new `SourceKind` value plus an indexer — but no
+  enumerator is pre-allocated for them, for the same reason `BlockType` does not fake its
+  unimplemented types: a persisted value with no writer behind it is a promise the enum cannot
+  keep.
+- **Database/collection search (§15).** The `Database` block type is itself NOT IMPLEMENTED.
+- **A page-level roll-up row.** Discussed above: a multi-term query spanning two blocks of one
+  page does not match that page today. Deferred because the fix pays the O(page) write cost
+  that block-level granularity was chosen to avoid; the honest resolutions are either the
+  roll-up row on a debounced background write (which breaks the one-transaction rule) or a
+  query-time post-pass that groups block hits by `container_id` and re-scores.
+- **Collapsing `note_fts` into the unified table.** Notes are currently indexed **twice** —
+  once in `note_fts` for `NoteStore::search`, once in the unified table. That is a real cost
+  (`database-design.md` §9 budgets the FTS index at ~40 % of text, so notes pay it twice) and
+  it is deliberate: `NoteStore::search` returns `notes::SearchHit` with its own bm25 ranking
+  and is consumed through `core/capi`, which this change is not permitted to touch. Repointing
+  it would change result ordering across a frozen ABI. The follow-up is to reimplement
+  `NoteStore::search` as a kind-filtered unified query and delete `note_fts`, once the C ABI
+  moves onto the unified API.
+- **No C ABI surface.** `core/capi` is untouched, by instruction and for the same reason
+  `core/blocks` and `file-engine` landed without it: the ABI is versioned and permanent, and
+  committing to a search ABI before the layer has settled is how a bad shape becomes forever.
+- **A CJK-capable tokenizer.** `unicode61` does not segment Chinese/Japanese/Korean, so a CJK
+  query degrades to whole-run matching. Inherited from `note_fts` rather than introduced here;
+  the fix is the custom ICU tokenizer `database-design.md` §3.9 names.
+- **No CLI surface.** `tools/notes_cli` still drives `NoteStore::search` only; there is no
+  `uapp-notes search-all`. The port is exercised by the test suite, not by a shipped command.
+- **Concurrency testing.** Two connections on one file, both taking `BEGIN IMMEDIATE` under a
+  5 s busy timeout, is the WAL arrangement `architecture.md` §6 describes, but no test drives a
+  note write and a block write at the same instant. Untested, therefore not claimed.
+- **Index rebuild / integrity check.** The index is derived, rebuildable data
+  (`database-design.md` §6 marks `fts_content` as such), but there is no `REBUILD` path and no
+  "does the index agree with the content" verifier. §11 of that document names derived-data
+  drift as a known integrity hazard, and the one-transaction discipline is a preventive measure,
+  not a detector.
+- **No fuzz target.** `testing-strategy.md` §6.1 does not list one for search, and the one
+  untrusted input here — the query string — is already covered by the `fts_query` unit tests
+  and the 20-case hostile corpus above. Recorded so the absence is a decision, not an oversight.
+
 ### Added — `fuzz_pdf_reader`: a libFuzzer target over `pdf-engine/reader`, and the product bug it found (spec §29)
 
 Closes the gate the `pdf-engine/reader` entry below left open — its own "what is still owed"

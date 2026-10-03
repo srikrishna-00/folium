@@ -19,7 +19,9 @@
 #include <vector>
 
 #include "uapp/notes/note.h"
+#include "uapp/search/search_result.h"
 #include "uapp/storage/sqlite/fts_query.h"
+#include "search_index_sql.h"
 #include "sqlite_raii.h"
 
 namespace uapp::storage::sqlite {
@@ -43,6 +45,22 @@ using notes::SearchHit;
 // That costs a second copy of the text; the external-content pattern the
 // design doc eventually wants is a Phase 9 optimisation, and doing it now
 // would mean hand-maintaining delete-shadow rows for no benefit at this size.
+//
+// TWO INDEXES, ON PURPOSE (search_index_sql.h is the other one)
+// ---------------------------------------------------------------------------
+// Every write below maintains `note_fts` AND the shared `search_entry` /
+// `search_fts` pair that core/search queries. `note_fts` is NOT folded into
+// the unified table in this change, because `NoteStore::search` returns
+// `notes::SearchHit` with its own bm25 ranking and that API is consumed
+// through core/capi, which this change is explicitly not allowed to touch.
+// Repointing it at the unified table would change the result ordering across
+// a frozen ABI.
+//
+// The cost is a second copy of note text in the index (~40 % of text per
+// database-design.md section 9, so notes pay it twice). Collapsing the two —
+// deleting `note_fts` and reimplementing `NoteStore::search` as a
+// kind-filtered unified query — is the follow-up once core/capi moves onto
+// the unified API. Recorded in docs/changelog.md, not left to be rediscovered.
 // ---------------------------------------------------------------------------
 constexpr char kSchemaSql[] =
     "CREATE TABLE IF NOT EXISTS schema_meta ("
@@ -181,6 +199,16 @@ Status SqliteNoteStore::insert(const Note& note) noexcept {
         }
     }
 
+    // The UNIFIED index, in the same transaction too. Same argument as above:
+    // if this fails, the content insert rolls back with it, so the store can
+    // never hold a note that the cross-type search cannot find.
+    if (const Status s = search_index::put(conn_.get(), search::SourceKind::Note,
+                                           note.id.bytes(), nullptr,
+                                           note.title, note.body);
+        !is_ok(s)) {
+        return s;
+    }
+
     return txn.commit();
 }
 
@@ -228,6 +256,16 @@ Status SqliteNoteStore::update(const Note& note) noexcept {
 
         const int rc = sqlite3_step(stmt.get());
         if (rc != SQLITE_DONE) { return write_status_for(rc); }
+    }
+
+    // Reindex in the unified table too. `put` replaces the existing row
+    // rather than appending, so an edit cannot leave the OLD text matchable
+    // -- which is the stale-results bug the tests assert against directly.
+    if (const Status s = search_index::put(conn_.get(), search::SourceKind::Note,
+                                           note.id.bytes(), nullptr,
+                                           note.title, note.body);
+        !is_ok(s)) {
+        return s;
     }
 
     return txn.commit();
@@ -303,6 +341,12 @@ Status SqliteNoteStore::remove(const NoteId& id) noexcept {
         if (const Status s = stmt.bind_int64(1, rowid); !is_ok(s)) { return s; }
         const int rc = sqlite3_step(stmt.get());
         if (rc != SQLITE_DONE) { return write_status_for(rc); }
+    }
+
+    if (const Status s = search_index::erase(conn_.get(), search::SourceKind::Note,
+                                             id.bytes());
+        !is_ok(s)) {
+        return s;
     }
 
     return txn.commit();
@@ -421,7 +465,11 @@ Status apply_schema(sqlite3* db) noexcept {
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
         return Status::StoreSchemaFailed;
     }
-    return Status::Ok;
+
+    // The unified index lives in the same file and is created by whichever
+    // adapter opens it first. `IF NOT EXISTS` makes the second one a no-op,
+    // and the DDL is a single shared constant so the two cannot disagree.
+    return search_index::apply_schema(db);
 }
 
 /// Reject a database written by a newer build. Opening it read-write would
@@ -435,14 +483,14 @@ Status check_schema_version(sqlite3* db) noexcept {
         return Status::Ok;
     }
     const int rc = sqlite3_step(stmt.get());
-    if (rc == SQLITE_DONE) { return Status::Ok; }
+    if (rc == SQLITE_DONE) { return search_index::check_schema_version(db); }
     if (rc != SQLITE_ROW)  { return Status::StoreSchemaFailed; }
 
     const std::int64_t found = stmt.column_int64(0);
     if (found > kNoteSchemaVersion) {
         return Status::StoreSchemaFailed;
     }
-    return Status::Ok;
+    return search_index::check_schema_version(db);
 }
 
 }  // namespace
