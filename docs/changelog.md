@@ -12,6 +12,303 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `core/capi`: the page/block and unified-search C ABI (ABI **0.2**, spec §14/§16, §30)
+
+`core/capi` existed but exposed `NoteService` and nothing else, and the previous two entries
+both said so: the `core/search` entry recorded "**No C ABI surface** — `core/capi` is
+untouched", and the C ABI's own known-gaps bullet read "**Notes only**". A mobile binding
+could therefore create and search notes but could not open a page, add a block, or run the
+unified query that §16 had just built. This change closes exactly that, and nothing else:
+**two new public headers, no change to any existing one's signatures or behaviour.**
+
+| header | surface | handles |
+| --- | --- | --- |
+| `uapp/capi/uapp_blocks.h` | `blocks::DocumentService` — create/open/rename/delete page, add/update/delete/reorder/move block, counts | `uapp_document_service_t`, `uapp_page_t` |
+| `uapp/capi/uapp_search.h` | `search::SearchIndex` — one query across notes **and** pages/blocks | `uapp_search_index_t`, `uapp_unified_results_t` |
+
+`uapp_notes.h` and `capi_notes.cpp` are **byte-for-byte untouched** (`git diff` on both is
+empty), which is what makes the version bump additive rather than a claim.
+
+#### The ABI version decision: **0.1 → 0.2, a MINOR bump**
+
+`uapp_capi.h` already documents its own rule — within a major, changes are **additive only**:
+"New functions and **new enum values** may appear; existing signatures, enum values and
+semantics may not change." Everything here fits: two new headers of new functions, four new
+handle types, two new enums, and nine new `uapp_status_t` values. No existing signature, enum
+value or semantic moved, so a caller compiled against 0.1 runs unmodified against 0.2 — and
+`uapp_abi_is_compatible(0, 1)` still answers `UAPP_TRUE`, which the suite asserts. Major stays
+**0** for the reason it always has: the surface is not frozen, and the freeze lands with the
+first shipped release along with the ABI-diff CI job (api-design.md §10 rule 5).
+
+#### Judgment call, and a deliberate reversal of precedent: the 5xx status codes
+
+Three commits running (`core/blocks`, `file-engine`, `pdf-engine`) added `uapp::Status` codes
+and mapped every one of them to `UAPP_STATUS_UNEXPECTED` in `to_c_status`, minting **no** new
+ABI constant. The stated reason, quoted from that code:
+
+> "...nothing reachable through this boundary can return one of them yet — `core/capi` still
+> exposes only `NoteService`. Minting an error vocabulary for a block ABI that does not exist
+> would freeze a guess into a stable interface."
+
+**The emphasised clause is the whole argument, and `uapp_blocks.h` makes it false.** All nine
+block/page codes are now reachable from C: `BlockPositionInvalid` from `add_block`,
+`BlockCycleDetected` and `BlockDepthExceeded` from `move_block`, `BlockMalformed` from a
+heading level of 9, `PageTitleTooLong` from a long title, and `IdMalformed` from *every* id
+argument on the surface. Keeping the old mapping would mean a Kotlin binding cannot tell "you
+dragged that block into its own child" from "an unexpected internal condition was contained at
+the C ABI boundary" — which contradicts the ERROR DISCIPLINE section of `uapp_capi.h` and spec
+§33, makes `UAPP_STATUS_UNEXPECTED` (documented as the boundary's *last line of defence*) the
+commonest status a document editor sees, and is unfixable later without a breaking change or a
+second parallel error channel.
+
+So **nine codes were minted** — `ID_MALFORMED` (104) and `BLOCK_*` / `PAGE_*` (500–507) — with
+the **same numeric values** as `uapp::Status`, each pinned by a `UAPP_CAPI_ASSERT_CODE`
+static assert. No code was invented that the core does not have, and no distinction was drawn
+finer than the core can actually make.
+
+**The precedent is kept where it still applies:** `file-engine`'s 6xx and `pdf-engine`'s 7xx
+codes remain listed-and-flattened to `UNEXPECTED`, because there is still no file or PDF ABI
+and nothing reachable through the boundary can produce one. The rule was never "flatten
+forever"; it was "do not mint a vocabulary for a surface that does not exist". `core/search`
+needed **no** mint at all — its port reports only `SearchQueryEmpty`, `SearchFailed`,
+`InvalidArgument` and the `Store*` family, every one already mapped. The test is whether the
+*core* grew a code, not whether the *ABI* grew a header.
+
+#### The design decision: block content as a FLAT tagged struct, not a C `union`
+
+`BlockContent` is a `std::variant` of eight payloads, and `core/blocks/block.h` chose a variant
+over a class hierarchy specifically because it "maps to C as `{ int32_t type; union { ... }
+payload; }` — mechanically, with no ownership question". The C ABI nonetheless uses a **flat**
+`uapp_block_content_t`: a discriminant plus the union of every alternative's fields, four in
+total (`text`, `language`, `heading_level`, `checked`). Three reasons, in order of weight:
+
+1. **A union breaks the `struct_size` versioning rule.** api-design.md §10 rule 2 versions a
+   boundary struct by a leading `uint32_t struct_size`, and that works *because the struct only
+   grows at the tail*. A union does not: adding a field to one arm changes `sizeof(union)`,
+   which moves every member after it and silently relays out a struct whose `struct_size` a 0.2
+   caller is still reporting correctly. Giving `CALLOUT` a payload later would then be a
+   **breaking** change wearing an additive change's clothes. Flat, the new field appends,
+   `struct_size` says the caller does not have it, and the rule does its job.
+2. **The union saves ~16 bytes per *call* and costs every binding a marshalling layer.** Six of
+   the eight payloads are one string; nothing stores this struct. Against that, a C union inside
+   a struct is the worst-supported construct at an FFI boundary — Swift's C importer maps it to
+   an opaque type with no member-wise initialiser, and JNI needs hand-written per-arm
+   marshalling, in two bindings, forever.
+3. **The union's one real advantage does not survive translation.** In C++ you cannot read the
+   wrong `variant` arm; in C nothing stops anyone reading any union member regardless of the
+   tag. So the safety is not what is being given up.
+
+**The cost, stated plainly:** the struct carries fields a given `type` does not use, so the
+type/field relation is documented and checked at runtime rather than enforced by the compiler.
+`uapp_blocks.h` carries the full table, `uapp_block_content_init(type, out)` makes "choose the
+type, then the fields" the path of least resistance, and fields a type does not read are
+**ignored on input, not validated** — rejecting a stale `language` would turn the ordinary
+editor action "turn this heading into a paragraph" into a bug in every caller that reuses its
+struct. On output they are zero/empty and `text`/`language` are **never NULL**, so no binding
+needs a NULL check before `strlen`.
+
+Three outcomes are told apart on the discriminant, because a UI must react differently to each:
+types 0–7 succeed, the eleven declared-but-unbuilt types 8–18 are
+`UAPP_STATUS_BLOCK_TYPE_UNSUPPORTED` ("not yet", with a machine-readable reason), and anything
+else is `UAPP_STATUS_INVALID_ARGUMENT` ("caller bug").
+
+#### How a tree crosses a C boundary: the flattened pre-order view
+
+`Block` holds `std::vector<Block> children`. The candidates were (a) a handle per block with
+`child_count`/`child_at` navigation, (b) a FlatBuffers payload, (c) the tree flattened into
+**pre-order** and addressed by index, each row carrying `depth`, `parent_id_hex` and
+`child_count`. **(c)**, because it is what the callers already want — UITableView,
+RecyclerView and LazyColumn are all index-addressed flat lists, so handing a binding a tree to
+re-flatten every frame is the work done twice — and because every string a row exposes is
+already materialised inside the page handle, so an accessor borrows (rule B) with no
+per-row allocation, exactly as `uapp_search_results_t` already does. No structure is lost:
+`depth` + `parent_id_hex` + `child_count` reconstruct the tree, and
+`uapp_page_find_block_index()` maps an id back to its row. (a) is the shape `block.h` already
+rejects as "where FFI surfaces go to die"; (b) is right for a tree an order of magnitude
+larger and stays recorded as NOT IMPLEMENTED. The flattener is **iterative with an explicit
+stack**, like every tree walk in `core/blocks`, because the tree comes out of an
+attacker-reachable file (spec §28).
+
+#### A real UBSan finding: the enum range pin was only half there
+
+`UAPP_STATUS_FORCE_INT32 = 0x7FFFFFFF` exists so that reading an integer a C caller cast into
+the enum is defined rather than UB — and `note_capi_test.c` proves it for `424242`. It was
+**wrong for negatives**: an enum whose enumerators are all non-negative has valid range
+`[0, 0x7FFFFFFF]`, so `uapp_status_code((uapp_status_t)-1)` was still undefined, and the
+asymmetry was invisible because no test had ever cast a *negative* integer in. UBSan flagged it
+on `uapp_source_kind_name((uapp_source_kind_t)-1)` the first time the new suite tried.
+Fixed by adding `UAPP_*_FORCE_INT32_MIN = -0x7FFFFFFF - 1` to **all three** ABI enums
+(`uapp_status_t`, `uapp_block_type_t`, `uapp_source_kind_t`) — purely additive, no signature or
+existing value touched — plus a case that casts `{-1, -100, -424242, 424242, INT32_MIN,
+INT32_MAX}` into both enums, because an untested half of a claim is not a claim.
+
+#### One behaviour worth pinning: `block_count` on a missing page
+
+`uapp_document_service_block_count()` on a page that does not exist is **`OK` with a count of
+zero**, not `NOT_FOUND`: the core's `block_count` counts the rows carrying that page id and
+never probes for the page. Surprising enough to be a named assertion and a header note. The ABI
+mirrors the core rather than adding an existence check the C++ API does not have — "this layer
+adds no behaviour" has to mean it even when the invented behaviour would be nicer.
+
+#### Files
+
+- `core/capi/include/uapp/capi/uapp_blocks.h` — the page/block surface: two handles, 19-value
+  `uapp_block_type_t`, `uapp_block_content_t`, `uapp_block_limits_t`, 11 service functions and
+  14 page accessors.
+- `core/capi/include/uapp/capi/uapp_search.h` — the unified-search surface: two handles,
+  `uapp_source_kind_t`, `uapp_search_limits_t`, one query function, six row accessors.
+- `core/capi/include/uapp/capi/uapp_capi.h` — ABI 0.2; the 1xx `ID_MALFORMED` and 5xx
+  block/page codes; the two `FORCE_INT32_MIN` pins; `UAPP_ID_HEX_LENGTH` and `UAPP_ID_NIL_HEX`
+  (shared, because both new surfaces return the nil id rather than NULL).
+- `core/capi/src/capi_blocks.cpp`, `src/capi_search.cpp` — one TU per public header, so a
+  binding reading `uapp_blocks.h` finds `capi_blocks.cpp` and the eventual shared-library
+  export set is a per-surface decision. Compile-time asserts pin all **19** block types and all
+  **3** source kinds to their C++ values, and `UAPP_BLOCK_POSITION_APPEND` to
+  `blocks::kAppendPosition`. The `to_block_content` switch lists the eleven unbuilt types
+  explicitly rather than defaulting, so implementing one in the core without teaching the
+  translator is a compile error.
+- `core/capi/src/capi_internal.h` — four new handle magic cookies, and
+  `UAPP_CAPI_GUARD_END_FALLBACK` for the three exported pure lookups that return a value
+  rather than a status.
+- `core/capi/src/capi_common.cpp` — `to_c_status` extended, with the reversal argued in place;
+  the two status-string switches extended to stay exhaustive.
+- `tests/capi/capi_test_harness.h` — the ~70-line C harness, extracted so three C test files
+  do not carry three copies of the macros that decide whether a test passed.
+  `note_capi_test.c` deliberately keeps its inline copy: it is a passing suite guarding a
+  frozen surface, and a non-functional rewrite of it is the more expensive risk. Recorded in
+  the header rather than left for a reviewer to notice.
+- `tests/capi/blocks_capi_test.c`, `tests/capi/search_capi_test.c`, `tests/CMakeLists.txt` —
+  two new **C** executables and four CTest entries (`uapp.capi.blocks.slice` / `.boundary`,
+  `uapp.capi.search.slice` / `.boundary`).
+- `core/capi/CMakeLists.txt` — the two new sources; the composition-root comment updated, since
+  this target now binds three ports to their SQLite adapters rather than one.
+
+#### Verification
+
+```text
+$ cmake -S . -B build_capi2 -DCMAKE_BUILD_TYPE=Debug && cmake --build build_capi2 -j8
+[100%] Built target uapp_blocks_capi_tests   # clean under -Werror -fno-exceptions -fno-rtti
+[100%] Built target uapp_search_capi_tests
+
+$ ./build_capi2/bin/uapp_blocks_capi_tests
+23 passed, 0 failed
+$ ./build_capi2/bin/uapp_search_capi_tests
+13 passed, 0 failed
+
+$ ctest --test-dir build_capi2 --output-on-failure
+100% tests passed out of 20
+
+$ cmake -S . -B build_capi2_asan -DCMAKE_BUILD_TYPE=Debug -DUAPP_ENABLE_SANITIZERS=ON
+$ UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 ctest --test-dir build_capi2_asan
+100% tests passed out of 20          # ASan + UBSan, no findings
+```
+
+The standalone-C99 property, checked per header rather than only via the test binaries —
+`architecture.md` §8 rule 5 asks that each capi header "compile clean under a C compiler, not
+just a C++ one", and a header that only works *after* another one is included does not:
+
+```text
+$ clang --version | head -1
+Apple clang version 21.0.0 (clang-2100.3.34.2)
+
+$ for h in uapp_capi uapp_notes uapp_blocks uapp_search; do \
+    printf '#include "uapp/capi/%s.h"\nint main(void){return 0;}\n' $h > only_$h.c; \
+    clang -std=c99 -pedantic-errors -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion \
+          -Wshadow -Wcast-qual -Wdouble-promotion -Wformat=2 -Wundef -Wunused -Werror \
+          -Icore/capi/include -fsyntax-only only_$h.c && echo "OK: $h.h alone, as C99"; done
+OK: uapp_capi.h alone, as C99
+OK: uapp_notes.h alone, as C99
+OK: uapp_blocks.h alone, as C99
+OK: uapp_search.h alone, as C99
+```
+
+This check is what caught the first spelling of `UAPP_BLOCK_POSITION_APPEND` as `((size_t)-1)`:
+a C-style cast, which `-Wold-style-cast -Werror` forbids in C++, so the implementation could
+not consume its own public macro. A macro only the C side can use is not an ABI. It is
+`SIZE_MAX` now.
+
+```text
+$ for b in uapp_blocks_capi_tests uapp_search_capi_tests uapp_capi_tests; do \
+    leaks --atExit -- ./build_capi2/bin/$b | grep "leaks for"; done
+Process 89567: 0 leaks for 0 total leaked bytes.
+Process 89572: 0 leaks for 0 total leaked bytes.
+Process 89577: 0 leaks for 0 total leaked bytes.
+```
+
+Unchanged counts for every pre-existing suite: **notes 42, blocks 36, search 22, file_engine
+65, pdf 23, and the note C ABI still 17** — the last one is the number that matters, since it
+is the evidence that this change is additive.
+
+The 36 new C cases cover, through the **public headers only**: a page with one block of every
+implemented type, two of them nested, read back and verified field by field (type, depth,
+parent id, direct child count, payload, timestamps, pre-order position); update with and
+without a type change, children surviving it, and a rejected update leaving the block
+untouched; delete cascading through a three-level subtree with the sibling gap closed and the
+sibling surviving; reorder to the front, to the end via the append sentinel, and a rejected
+out-of-range reorder leaving the order intact; move re-parenting a block *and its subtree* with
+depths recomputed, out to the top level via both `NULL` and the explicit nil id; rename and
+delete page; persistence across close/reopen; two independent services sharing nothing; a
+read-only service reading but failing writes with `STORE_READ_ONLY`; **one query returning a
+note and a block together**, each typed, the block hit carrying the page id *and* the page's
+title; a page-title hit; the index following every content edit, rename and delete with no
+stale hit, from both surfaces, down to an empty index; limit clamping; and a results handle
+outliving the index it came from.
+
+Boundary coverage matches `note_capi_test.c`'s rigor: null handles on every entry point; null
+strings and null out-params, with the optional ones proved optional; `struct_size` rejected
+below this build's and accepted above it, on configs, limits **and** the content struct;
+use-after-close on all four handle types; malformed ids told apart from absent ones; row-index
+bounds including `(size_t)-1` and an empty page; move cycles (self, child, grandchild),
+cross-page moves, bad positions; the full discriminant matrix; heading levels, control bytes in
+a language tag and over-length input; 13 hostile queries; and **wrong-type handles across
+surfaces** — including a live *note* handle where a page is expected, and
+`uapp_search_results_t` versus `uapp_unified_results_t`, which are the two that will sit side
+by side as indistinguishable `Long`s in one Kotlin binding. The destructors are shown
+*refusing* to free a handle that is not theirs and leaving it intact, because leaking beats
+freeing someone else's live object.
+
+Two **mutation checks**, to prove the suites are not vacuous rather than assuming it:
+
+```text
+# row.depth := 1, row.child_count := 0  (the flattened tree loses its structure)
+3 cases red: "every implemented type", "update ... change its type", "move re-parents"
+
+# a block hit's container_id := nil      (the hit can no longer be navigated to)
+1 case red: "one query returns a note and a block together"
+```
+
+A third attempted mutation — moving the child-stack push ahead of the row emission — was
+**discarded as a non-mutation**: it does not change emission order, so a green suite was the
+correct answer rather than a gap. Recorded because a mutation check that cannot fail is worth
+exactly as little as a test that cannot fail.
+
+#### NOT IMPLEMENTED (spec §5) — deferred, with reasons
+
+- **No C ABI for `file-engine/detection` or `pdf-engine/reader`.** Out of scope by instruction
+  this run; both were already built and tested in C++. Their `Status` codes stay mapped to
+  `UAPP_STATUS_UNEXPECTED`, which is the honest answer while nothing reachable through the
+  boundary can produce one.
+- **No OCR, scanner, sync or AI ABI.** Those engines do not exist.
+- **Deferred: `append_block` and `get_block`.** `DocumentService` has both;
+  `uapp_document_service_add_block(..., UAPP_BLOCK_POSITION_APPEND, ...)` is `append_block`
+  exactly, and a single block is read out of a page snapshot, so neither would add reach — only
+  surface area to freeze.
+- **NOT IMPLEMENTED: a FlatBuffers block-tree payload** (`uapp_buf_t`, api-design.md §10
+  rule 4). The flattened-handle view is the right shape at today's sizes; the argument and the
+  point at which a buffer wins instead are both in `uapp_blocks.h`.
+- **NOT IMPLEMENTED: change notification.** A page handle is a snapshot, so a binding learns
+  about a mutation by reopening. No observer, no diff, no incremental row update — which a real
+  editor UI will eventually want, and which needs a change-feed the core does not have.
+- **Not proven: concurrent use from multiple threads.** Distinct handles share no mutable
+  state and the suite shows independent services not seeing each other, but nothing here runs
+  two threads. Unchanged from the 0.1 position.
+- **Unchanged from 0.1:** no `uapp_error_t` cause chain, no job protocol or platform vtable, no
+  shared-library packaging or ABI freeze, no ABI-diff CI job, and no bindings — no
+  `uapp-kotlin`, no `UAPPKit`, no JNI or Swift code. This run widened the boundary those will
+  attach to and stopped there.
+
+---
+
 ### Added — `core/search`: one unified full-text search across notes and pages/blocks (spec §16, Phase 9)
 
 Spec §16 asks for one search over "Notes, Pages, PDFs, DOCX, Images through OCR, scanned
@@ -255,9 +552,11 @@ the suite red at the specific case that claims to cover it.
   it would change result ordering across a frozen ABI. The follow-up is to reimplement
   `NoteStore::search` as a kind-filtered unified query and delete `note_fts`, once the C ABI
   moves onto the unified API.
-- **No C ABI surface.** `core/capi` is untouched, by instruction and for the same reason
-  `core/blocks` and `file-engine` landed without it: the ABI is versioned and permanent, and
-  committing to a search ABI before the layer has settled is how a bad shape becomes forever.
+- **~~No C ABI surface.~~** *(CLOSED by the ABI 0.2 entry at the top of \[Unreleased], which
+  added `uapp/capi/uapp_search.h`. Was: "`core/capi` is untouched, by instruction and for the
+  same reason `core/blocks` and `file-engine` landed without it: the ABI is versioned and
+  permanent, and committing to a search ABI before the layer has settled is how a bad shape
+  becomes forever." The layer settled; the ABI followed.)*
 - **A CJK-capable tokenizer.** `unicode61` does not segment Chinese/Japanese/Korean, so a CJK
   query degrades to whole-run matching. Inherited from `note_fts` rather than introduced here;
   the fix is the custom ICU tokenizer `database-design.md` §3.9 names.
@@ -979,13 +1278,32 @@ format on purpose, so the output of the two suites reads identically.
   build carries real user data.
 - **NOT IMPLEMENTED: sync, CRDT, multi-device.** Single-device only. The Fugue CRDT is Phase 13
   and needs its own correctness-proof spike first (ADR-0002 amendment); no CRDT work was started.
-- **Partially implemented: the C ABI (`libuapp_capi`).** *(Was: NOT IMPLEMENTED. Narrowed —
-  `core/capi` now exists, is tested from C, and is the supported boundary for the note slice.)*
-  What is **not** covered, precisely:
-  - **Notes only.** `uapp_note_*` is the entire surface. There is no C ABI for documents,
-    blocks, files, PDF, OCR, scanner, search-beyond-notes, sync or AI, because none of those
-    engines exist. When the `document`+`block` model lands (database-design.md §3.3), its ABI
-    is new surface, not a reshaping of this one.
+- **Partially implemented: the C ABI (`libuapp_capi`).** *(Was: NOT IMPLEMENTED, then
+  narrowed to "the supported boundary for the note slice". At ABI 0.2 it is the supported
+  boundary for the note slice, the page/block document model AND unified search, all three
+  tested from C.)* What is **not** covered, precisely:
+  - **~~Notes only.~~** *(Narrowed by the ABI 0.2 entry at the top of \[Unreleased]. Was:
+    "`uapp_note_*` is the entire surface. There is no C ABI for documents, blocks, files, PDF,
+    OCR, scanner, search-beyond-notes, sync or AI, because none of those engines exist.")*
+    **Notes, pages/blocks and unified search are now covered**, by `uapp_notes.h`,
+    `uapp_blocks.h` and `uapp_search.h` respectively. What remains **NOT IMPLEMENTED**, stated
+    exactly rather than as a list of everything that is not notes:
+    - **No file / detection ABI.** `file-engine/detection` exists and is tested in C++, but has
+      no C surface. Deliberate: that engine's `Status` codes are still mapped to
+      `UAPP_STATUS_UNEXPECTED` in `to_c_status`, precisely because nothing reachable through
+      the boundary can produce one.
+    - **No PDF ABI.** Same position, same reason — and `pdf-engine/reader` is the subsystem
+      most likely to want a rich ABI vocabulary ("wrong password" must read differently from
+      "this file is damaged"), which is exactly why no `UAPP_STATUS_PDF_*` constant has been
+      minted on a guess.
+    - **No OCR, scanner, sync or AI ABI.** None of those engines exists at all, so there is
+      nothing to wrap.
+    - **No child pages, databases, files-on-a-page, or the eleven declared-but-unbuilt block
+      types.** `uapp_blocks.h` exposes exactly the eight implemented types and reports the
+      other eleven as `UAPP_STATUS_BLOCK_TYPE_UNSUPPORTED` with a machine-readable reason.
+      These are core gaps (`core/blocks`), not ABI gaps: the ABI covers what exists.
+    - **No undo/redo, version history, backlinks, mentions, comments, sharing, permissions or
+      templates.** Also core gaps, recorded under the `core/blocks` entry below.
   - **NOT IMPLEMENTED: the `uapp_error_t` cause chain** from architecture.md §7. The boundary
     carries a code plus a static, content-free message — no `domain`, no `detail`, no causes.
   - **NOT IMPLEMENTED: the job protocol** (`uapp_job_submit`/`cancel`, progress and done
@@ -993,7 +1311,10 @@ format on purpose, so the output of the two suites reads identically.
     slice is long-running or needs a platform service, so neither would have been exercised.
   - **NOT IMPLEMENTED: FlatBuffers payloads** (`uapp_buf_t`) for structured data, per
     api-design.md §10 rule 4. Search results cross as an opaque handle with typed accessors,
-    which is adequate for four scalar fields and would not be for a block tree.
+    which is adequate for four scalar fields and would not be for a block tree. *(Still true
+    at ABI 0.2, and now load-bearing: the block tree crosses as a flattened pre-order view
+    behind a handle rather than as a buffer. The argument for that choice, and the point at
+    which a buffer becomes the right answer instead, is in `uapp_blocks.h`.)*
   - **Deferred: shared-library packaging and the ABI freeze.** `libuapp_capi` is a static
     archive; the `.so`/`.framework` build with a closed export set (the `UAPP_CAPI_API`
     visibility annotations are already in place for it) is not done, and neither is the

@@ -11,18 +11,29 @@
 # (UAPP_CAPI_BUILD_SHARED + a version script closing the export set + the
 # ABI-diff CI job from api-design.md §10 rule 5) is a later task; the
 # visibility annotations in the public header are already in place for it.
+#
+# ONE translation unit per public header, and that mapping is deliberate: a
+# binding reads uapp_blocks.h and finds capi_blocks.cpp, and the shared-library
+# export set (when it lands) is a per-surface decision rather than a hunt
+# through one large file.
 add_library(uapp_capi STATIC
     src/capi_common.cpp
-    src/capi_notes.cpp)
+    src/capi_notes.cpp
+    src/capi_blocks.cpp
+    src/capi_search.cpp)
 add_library(uapp::capi ALIAS uapp_capi)
 
 target_include_directories(uapp_capi
     PUBLIC  include
     PRIVATE src)
 
-# This target is the COMPOSITION ROOT for the note slice: it is where the
-# abstract NoteStore port is bound to the concrete SQLite adapter, and it is
-# the only reason a link to storage/sqlite appears above core/. It is PRIVATE,
+# This target is the COMPOSITION ROOT for all three slices: it is where the
+# abstract NoteStore, BlockStore and SearchIndex ports are bound to their
+# concrete SQLite adapters, and it is the only reason a link to storage/sqlite
+# appears above core/. (That is also why nothing here links uapp::core_blocks
+# or uapp::core_search by name — storage/sqlite links both PUBLIC, so the
+# headers and the archives arrive through it, exactly as core_notes already
+# did.) It is PRIVATE,
 # so the dependency stops here — nothing that links uapp::capi inherits a path
 # to sqlite3, and PHASE0_SUMMARY.md H-3 stays true.
 #

@@ -171,6 +171,86 @@ add_test(NAME uapp.capi.boundary COMMAND uapp_capi_tests "boundary:")
 set_tests_properties(uapp.capi.slice uapp.capi.boundary PROPERTIES TIMEOUT 120)
 
 # ---------------------------------------------------------------------------
+# The PAGE/BLOCK C ABI, exercised from C (ABI 0.2, uapp/capi/uapp_blocks.h).
+#
+# A SEPARATE executable from uapp_capi_tests, deliberately, and for the reason
+# the note/block C++ suites are split: "the note ABI broke" and "the document
+# ABI broke" mean very different things to whoever is holding the pager.
+#
+# Same posture: C compiler, -std=c99, the project warning set with -Werror,
+# linking ONLY uapp::capi. It includes uapp_blocks.h, uapp_capi.h and
+# uapp_notes.h -- the last one on purpose, so the wrong-handle-type case can
+# pass a live NOTE handle where a page is expected, which is exactly the
+# mistake a generated binding makes once one wrapper owns several opaque
+# `long` handles.
+# ---------------------------------------------------------------------------
+add_executable(uapp_blocks_capi_tests capi/blocks_capi_test.c)
+
+target_include_directories(uapp_blocks_capi_tests PRIVATE capi)
+
+target_link_libraries(uapp_blocks_capi_tests PRIVATE uapp::capi uapp::compiler_options)
+
+# Every source here is C, so CMake would choose the C driver to link — which
+# does not pull in the C++ runtime that uapp::capi's implementation needs.
+set_target_properties(uapp_blocks_capi_tests PROPERTIES LINKER_LANGUAGE CXX)
+
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/capi_blocks_test_run")
+target_compile_definitions(uapp_blocks_capi_tests PRIVATE
+    UAPP_CAPI_BLOCKS_TEST_DB_PATH="${CMAKE_CURRENT_BINARY_DIR}/capi_blocks_test_run/pages.db"
+    UAPP_CAPI_BLOCKS_TEST_RO_DB_PATH="${CMAKE_CURRENT_BINARY_DIR}/capi_blocks_test_run/pages_ro.db")
+
+add_test(NAME uapp.capi.blocks.slice    COMMAND uapp_blocks_capi_tests "slice:")
+add_test(NAME uapp.capi.blocks.boundary COMMAND uapp_blocks_capi_tests "boundary:")
+
+set_tests_properties(uapp.capi.blocks.slice uapp.capi.blocks.boundary
+                     PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
+# The UNIFIED SEARCH C ABI, exercised from C (ABI 0.2, uapp/capi/uapp_search.h).
+#
+# A third C executable, and the one that deliberately drives ALL THREE public
+# surfaces at once: the property under test — one query string returning a
+# note AND a block from a page, each row typed and carrying the ids needed to
+# open it — only exists with a note service, a document service and a search
+# index alive in one process on one database file. That is precisely what a
+# mobile binding will do, and no single-surface test can prove it.
+#
+# Every case here needs a REAL FILE, for the same reason the C++ search suite
+# does: two ":memory:" opens are two PRIVATE databases, so the three handles
+# could never see each other's index rows and the symptom would be zero
+# results with no error. Each case gets its own scratch path inside the build
+# tree, so nothing is written outside it and nothing is left behind.
+# ---------------------------------------------------------------------------
+add_executable(uapp_search_capi_tests capi/search_capi_test.c)
+
+target_include_directories(uapp_search_capi_tests PRIVATE capi)
+
+target_link_libraries(uapp_search_capi_tests PRIVATE uapp::capi uapp::compiler_options)
+
+set_target_properties(uapp_search_capi_tests PROPERTIES LINKER_LANGUAGE CXX)
+
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/capi_search_test_run")
+set(UAPP_CAPI_SEARCH_RUN_DIR "${CMAKE_CURRENT_BINARY_DIR}/capi_search_test_run")
+target_compile_definitions(uapp_search_capi_tests PRIVATE
+    UAPP_CAPI_SEARCH_TEST_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/unified.db"
+    UAPP_CAPI_SEARCH_TEST_EDITS_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/edits.db"
+    UAPP_CAPI_SEARCH_TEST_LIMIT_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/limit.db"
+    UAPP_CAPI_SEARCH_TEST_ALPHA_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/alpha.db"
+    UAPP_CAPI_SEARCH_TEST_BETA_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/beta.db"
+    UAPP_CAPI_SEARCH_TEST_OUTLIVE_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/outlive.db"
+    UAPP_CAPI_SEARCH_TEST_CONFIG_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/config.db"
+    UAPP_CAPI_SEARCH_TEST_QUERY_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/query.db"
+    UAPP_CAPI_SEARCH_TEST_BOUNDS_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/bounds.db"
+    UAPP_CAPI_SEARCH_TEST_CLOSE_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/close.db"
+    UAPP_CAPI_SEARCH_TEST_MIXUP_DB_PATH="${UAPP_CAPI_SEARCH_RUN_DIR}/mixup.db")
+
+add_test(NAME uapp.capi.search.slice    COMMAND uapp_search_capi_tests "slice:")
+add_test(NAME uapp.capi.search.boundary COMMAND uapp_search_capi_tests "boundary:")
+
+set_tests_properties(uapp.capi.search.slice uapp.capi.search.boundary
+                     PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
 # pdf-engine/reader — spec section 11, the viewing slice only.
 #
 # Conditional, and that is the point of the condition: PDF support depends on

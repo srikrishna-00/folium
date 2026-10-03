@@ -54,10 +54,20 @@
 #  define UAPP_CAPI_GUARD_END_VOID \
       }                            \
       catch (...) { return; }
+// For the handful of exported functions that are pure lookups and therefore
+// return a value rather than a status — uapp_block_type_name(),
+// uapp_block_type_is_implemented(), uapp_source_kind_name(). They cannot fail,
+// so there is no status to carry a failure on; the fallback is the same answer
+// they already give for an input they do not recognise, which keeps the "never
+// NULL" promise in the public headers true even on a path that cannot be taken.
+#  define UAPP_CAPI_GUARD_END_FALLBACK(fallback) \
+      }                                          \
+      catch (...) { return (fallback); }
 #else
 #  define UAPP_CAPI_GUARD_BEGIN {
 #  define UAPP_CAPI_GUARD_END }
 #  define UAPP_CAPI_GUARD_END_VOID }
+#  define UAPP_CAPI_GUARD_END_FALLBACK(fallback) }
 #endif
 
 namespace uapp::capi {
@@ -83,6 +93,15 @@ namespace uapp::capi {
 inline constexpr std::uint32_t kServiceMagic = 0x55415053u;  // 'UAPS'
 inline constexpr std::uint32_t kNoteMagic    = 0x5541504Eu;  // 'UAPN'
 inline constexpr std::uint32_t kResultsMagic = 0x55415052u;  // 'UAPR'
+
+// ABI 0.2 added two surfaces and therefore four more handle types. The values
+// stay distinct from the three above for exactly the reason the comment gives:
+// the mistake a generated binding makes is passing the wrong opaque pointer,
+// and on the Kotlin/Swift side every handle is an indistinguishable integer.
+inline constexpr std::uint32_t kDocServiceMagic    = 0x55415044u;  // 'UAPD'
+inline constexpr std::uint32_t kPageMagic          = 0x55415047u;  // 'UAPG'
+inline constexpr std::uint32_t kSearchIndexMagic   = 0x55415049u;  // 'UAPI'
+inline constexpr std::uint32_t kUnifiedResultMagic = 0x55415055u;  // 'UAPU'
 
 /// Duplicate a NUL-terminated string into a buffer owned by the caller and
 /// released by uapp_free_string(). Returns nullptr on allocation failure.

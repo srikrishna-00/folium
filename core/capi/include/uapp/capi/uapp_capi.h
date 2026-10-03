@@ -14,7 +14,10 @@
  *   * uapp_status_t, the C mirror of uapp::Status
  *   * the string-ownership rules and the one deallocator, uapp_free_string()
  *
- * The note surface lives in uapp/capi/uapp_notes.h.
+ * The domain surfaces live in:
+ *   * uapp/capi/uapp_notes.h   -- the flat note slice
+ *   * uapp/capi/uapp_blocks.h  -- pages and blocks (the document model)
+ *   * uapp/capi/uapp_search.h  -- unified search across notes and pages/blocks
  *
  * LANGUAGE LEVEL
  *   Strict C99. architecture.md section 8 rule 5 requires that capi headers
@@ -114,16 +117,50 @@ extern "C" {
  * the freeze -- and the ABI-diff CI job over the exported symbol list required
  * by api-design.md section 10 rule 5 -- lands with the first shipped release.
  * Until then, breaking changes bump MINOR and are recorded in the changelog.
+ *
+ * VERSION HISTORY
+ *   0.1  the note slice (uapp_notes.h).
+ *   0.2  ADDITIVE. uapp_blocks.h (pages/blocks) and uapp_search.h (unified
+ *        search) appear; the 1xx code ID_MALFORMED and the 5xx block/page
+ *        codes appear in uapp_status_t. No existing function signature, enum
+ *        value or semantic changed, so a caller built against 0.1 runs
+ *        unmodified against 0.2 -- which is exactly what the additive-only
+ *        rule above says and what uapp_abi_is_compatible(0, 1) still answers
+ *        UAPP_TRUE to.
  */
 #define UAPP_ABI_VERSION_MAJOR  0
-#define UAPP_ABI_VERSION_MINOR  1
-#define UAPP_ABI_VERSION_STRING "0.1"
+#define UAPP_ABI_VERSION_MINOR  2
+#define UAPP_ABI_VERSION_STRING "0.2"
 
 /* Boolean across the boundary. Not <stdbool.h>'s bool: its size is
  * implementation-defined, and an ABI cannot afford that. */
 typedef int32_t uapp_bool_t;
 #define UAPP_FALSE 0
 #define UAPP_TRUE  1
+
+/* --- object identifiers --------------------------------------------------
+ *
+ * Every identifier in the product is the same 128-bit value rendered as 32
+ * LOWERCASE hex characters (database-design.md section 2). It crosses this
+ * boundary as a NUL-terminated string rather than a uint8_t[16], because a
+ * string is what both bindings and both UIs actually carry: Kotlin and Swift
+ * would otherwise each hand-roll hex rendering, and a mismatch between two
+ * such renderings is a bug that only shows up as "the note is not found".
+ *
+ * Read the exact length at runtime from uapp_note_limits_t::id_hex_length,
+ * uapp_block_limits_t::id_hex_length or uapp_search_limits_t::id_hex_length;
+ * the macro below is for the ONE value with a meaning rather than a length.
+ */
+#define UAPP_ID_HEX_LENGTH 32
+
+/*
+ * The nil id: 32 '0' characters. It is never a real object's id. It means
+ * "unset", and in uapp_blocks.h it specifically means "this block is a direct
+ * child of the page, at the top level". Accessors that can return it return
+ * this exact string rather than NULL, so a caller never special-cases before
+ * strlen or strcmp.
+ */
+#define UAPP_ID_NIL_HEX "00000000000000000000000000000000"
 
 /*
  * The C mirror of uapp::Status (core/common/include/uapp/status.h).
@@ -144,6 +181,7 @@ typedef enum uapp_status {
     UAPP_STATUS_NOT_FOUND        = 101,
     UAPP_STATUS_ALREADY_EXISTS   = 102,
     UAPP_STATUS_INTERNAL         = 103,
+    UAPP_STATUS_ID_MALFORMED     = 104, /* a page or block id was not 32 hex characters */
 
     /* note domain validation (2xx) */
     UAPP_STATUS_NOTE_TITLE_TOO_LONG = 200,
@@ -160,6 +198,23 @@ typedef enum uapp_status {
     /* search (4xx) */
     UAPP_STATUS_SEARCH_QUERY_EMPTY = 400,
     UAPP_STATUS_SEARCH_FAILED      = 401,
+
+    /* block / page document model (5xx) -- added in ABI 0.2 alongside
+     * uapp_blocks.h. Before 0.2 these codes existed in uapp::Status but were
+     * mapped to UAPP_STATUS_UNEXPECTED, because nothing reachable through this
+     * boundary could produce one. uapp_blocks.h makes every one of them
+     * reachable, so they are now minted rather than flattened -- see the long
+     * note in core/capi/src/capi_common.cpp for why that is the opposite of
+     * the precedent set by the blocks, file-engine and pdf-engine commits and
+     * why the precedent does not apply once the surface exists. */
+    UAPP_STATUS_BLOCK_TYPE_UNSUPPORTED    = 500, /* a declared but NOT IMPLEMENTED block type */
+    UAPP_STATUS_BLOCK_DEPTH_EXCEEDED      = 501,
+    UAPP_STATUS_BLOCK_TEXT_TOO_LARGE      = 502,
+    UAPP_STATUS_BLOCK_MALFORMED           = 503, /* payload breaks its own type's rules */
+    UAPP_STATUS_BLOCK_POSITION_INVALID    = 504, /* insert/move index past the sibling list */
+    UAPP_STATUS_BLOCK_CYCLE_DETECTED      = 505, /* a move would make a block its own ancestor */
+    UAPP_STATUS_PAGE_TITLE_TOO_LONG       = 506,
+    UAPP_STATUS_PAGE_BLOCK_LIMIT_EXCEEDED = 507,
 
     /* C ABI boundary only (9xx) -- no uapp::Status counterpart */
     UAPP_STATUS_OUT_OF_MEMORY = 900, /* a boundary allocation failed; nothing was changed */
@@ -185,7 +240,26 @@ typedef enum uapp_status {
      *
      * Never returned, never compared against.
      */
-    UAPP_STATUS_FORCE_INT32 = 0x7FFFFFFF
+    UAPP_STATUS_FORCE_INT32 = 0x7FFFFFFF,
+
+    /*
+     * Also not a status, and it exists because the sentinel above does only
+     * HALF of job 2 above. Added in ABI 0.2, after UBSan said so.
+     *
+     * An unfixed-underlying-type enum's valid range is derived from its
+     * enumerators. With every enumerator non-negative, that range is
+     * [0, 0x7FFFFFFF] -- so `uapp_status_code((uapp_status_t)-1)` from C was
+     * STILL undefined behaviour, for exactly the reason the comment above
+     * gives for 424242, and the asymmetry was invisible because the test only
+     * ever cast a positive integer in. Pinning the bottom of the range makes
+     * the whole of int32 representable, which is what "a C caller can
+     * trivially produce" actually means: in C an enum IS an integer type, and
+     * nothing stops anyone passing -1.
+     *
+     * Spelled -0x7FFFFFFF - 1 rather than -0x80000000 because the latter is
+     * `-(0x80000000)`, and 0x80000000 does not fit in an int.
+     */
+    UAPP_STATUS_FORCE_INT32_MIN = -0x7FFFFFFF - 1
 } uapp_status_t;
 
 /*
