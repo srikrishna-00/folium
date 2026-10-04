@@ -38,6 +38,37 @@ a big table; forcing one IR to cover both produces a model that serves neither.
 
 ### 2.1 Universal Document Model (UDM)
 
+> **IMPLEMENTATION NOTE — added when `core/conversion` landed. This note and
+> `core/conversion/include/uapp/conversion/markdown.h` are two halves of one decision and
+> must not drift.**
+>
+> **`UDMDocument` below is NOT IMPLEMENTED, and it is not the type the shipped converter
+> translates through.** The Universal Document Model in this codebase is `blocks::Page` +
+> `blocks::Block` (`core/blocks`), which `adr/0003-page-supersedes-note.md` already made the
+> project's one document representation. Building a second, parallel document model for the
+> conversion engine would mean every conversion is **two** lossy hops (Markdown → UDM →
+> Page), and that the editor and the converter could disagree about what a document *is*. So
+> the IR is the live domain model, and the sketch below is re-scoped to the **superset
+> `blocks::Block` must grow into as formats land — a backlog, not a type.**
+>
+> What that backlog costs today, with the authority for each gap:
+>
+> | Sketched above | Status in `blocks::Block` |
+> |---|---|
+> | `Paragraph`, `Heading`, `CodeBlock`, `Quote`, `Divider` | **IMPLEMENTED** as five of the eight block types — except that `Heading` is levels **1–3** (`kMaxHeadingLevel`), not 1–6 |
+> | `List { ordered, items }` | **IMPLEMENTED** as bulleted / numbered / checklist *item* blocks with children, rather than as a container node. Numbering is DERIVED from sibling position at render time and never stored, so there is no `numbering` table to normalise into |
+> | `InlineNode` — `Text{marks}`, `Link`, `InlineImage`, `Break`, `FieldRef`, `Anchor` | **NOT IMPLEMENTED.** A block's text is a plain UTF-8 string; spans need an inline run model plus the sequence CRDT `database-design.md` reserves `block.crdt_state` for (`core/blocks/document_service.h`) |
+> | `Table`, `Image` | declared and NOT IMPLEMENTED — `BlockType::Table = 10`, `Image = 11` |
+> | `Equation`, `Embed` | declared and NOT IMPLEMENTED — `BlockType::Equation = 15`, `Embed = 16` |
+> | `PageBreak`, `Footnote`, `styles`, `sections`, `page_setup`, header/footer | no counterpart at all; these arrive with the first paginated format, not before |
+> | `resources` | NOT IMPLEMENTED — needs the blob store (`database-design.md` principle 6, "blobs are not in the database") |
+> | `Unsupported` | **no counterpart, and cannot have one**: `blocks::BlockContent` is a CLOSED variant (`core/blocks/block.h`, "WHY A VARIANT"). See the note in §6.2 for how §6.2's contract is met instead. |
+> | `fidelity` | **IMPLEMENTED** as `conversion::FidelityReport` (`core/conversion/include/uapp/conversion/fidelity.h`) |
+>
+> Scope of what exists: **one edge of §4's graph** — `blocks::Page` ↔ **Markdown**, both
+> directions, tested in both directions. There is no `ConversionPlanner`, no capability graph
+> and no job protocol yet, and every other row of §5 is NOT IMPLEMENTED.
+
 ```
 UDMDocument
   metadata     : { title, author, subject, keywords, created, modified,
@@ -221,6 +252,14 @@ added) · **–** not supported · **☁** server-only.
 | EPUB | Y | Y | Y | Y | H | L (T1) | R |
 | PDF | L (T1) | **Y (reconstruction)** | Y | Y | H | Y | R |
 
+> **IMPLEMENTATION NOTE (`core/conversion`).** Exactly **one** cell of this entire section is
+> implemented: **MD → MD**, i.e. `blocks::Page` → Markdown and Markdown → `blocks::Page`,
+> with the loss boundary documented construct-by-construct in
+> `core/conversion/include/uapp/conversion/markdown.h`. Every other cell in §5.1–§5.4 is
+> **NOT IMPLEMENTED**: each needs a real format parser, and the Office and EPUB rows need
+> third-party libraries that are not in this repository and have not had the spec §35 licence
+> review. The table stays as written because it is the *plan*; nothing here is faked.
+
 ### 5.2 Spreadsheets → X
 
 | From ↓ / To → | XLSX | CSV | ODS | PDF | HTML |
@@ -300,6 +339,20 @@ When a reader meets a construct it cannot model:
 
 **A reader that swallows an unknown element without emitting an `Unsupported` node is a bug**,
 and a reviewable one — the parser tests assert that unknown elements produce entries.
+
+> **IMPLEMENTATION NOTE (`core/conversion`).** Step 1 has **no counterpart and cannot have
+> one**: the IR is `blocks::Block`, whose `BlockContent` is a closed variant with no
+> `Unsupported` alternative (see §2.1). The shipped converter therefore keeps the *spirit* of
+> this contract by a different mechanism: an unmodelled construct is **kept as the plain text
+> it was written in** — never discarded — and a `FidelityReport` entry is filed naming it.
+> The consequence is that `lost_content()` is **false for every case the Markdown converter
+> can produce**, because every one of them keeps the bytes somewhere, so `severity:
+> "dropped"` is declared (the report shape is shared with converters that will need it) but
+> never emitted here. Entries aggregate by `(severity, construct)` rather than appearing once
+> per occurrence, which bounds the report against untrusted input (spec §38) and is also the
+> shape §6.1's own example shows. The "parser tests assert that unknown elements produce
+> entries" sentence is honoured literally: `tests/conversion/markdown_test.cpp` asserts the
+> exact construct id, severity and resulting text for every documented lossy case.
 
 ### 6.3 Surfacing
 

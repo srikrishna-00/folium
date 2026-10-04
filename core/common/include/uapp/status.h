@@ -89,6 +89,24 @@ enum class Status : std::int32_t {
                                    ///< overflowing width / height / stride
     PdfBufferTooSmall      = 707,  ///< the caller's pixel buffer cannot hold the request
     PdfNotOpen             = 708,  ///< operation on a Document that holds no document
+
+    // --- conversion engine (8xx) -------------------------------------------
+    // MARKDOWN ONLY at this point: the Page/Block <-> Markdown pair of spec
+    // section 10's "common intermediate representation" architecture
+    // (core/conversion). DOCX/PDF/HTML/EPUB conversion is NOT IMPLEMENTED and
+    // gets NO codes here, for the reason the 7xx block states for PDF editing:
+    // a code with no code path behind it is a promise this enum cannot keep.
+    //
+    // Deliberately only THREE codes, and all three are about the *conversion
+    // boundary* rather than about the document model. Everything the converter
+    // can produce that is really a block-model violation -- too-deep nesting,
+    // oversized text, too many blocks -- is reported with the EXISTING 5xx
+    // code for exactly that condition, because the importer's output IS a
+    // block tree and inventing a parallel vocabulary for its limits would
+    // mean two codes for one condition.
+    ConversionInputTooLarge  = 800,  ///< source document exceeds the conversion input cap
+    ConversionInputMalformed = 801,  ///< source document contains an embedded NUL byte
+    ConversionOutputTooLarge = 802,  ///< the emitted document would exceed the output cap
 };
 
 /// True iff the operation succeeded. Prefer `if (!uapp::is_ok(s))` over

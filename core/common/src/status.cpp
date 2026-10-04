@@ -45,6 +45,10 @@ const char* status_code(Status s) noexcept {
         case Status::PdfRenderSizeInvalid:   return "PDF_RENDER_SIZE_INVALID";
         case Status::PdfBufferTooSmall:      return "PDF_BUFFER_TOO_SMALL";
         case Status::PdfNotOpen:             return "PDF_NOT_OPEN";
+
+        case Status::ConversionInputTooLarge:  return "CONVERSION_INPUT_TOO_LARGE";
+        case Status::ConversionInputMalformed: return "CONVERSION_INPUT_MALFORMED";
+        case Status::ConversionOutputTooLarge: return "CONVERSION_OUTPUT_TOO_LARGE";
     }
     // Reached only if a caller casts a bogus integer into Status. We do not
     // trust that it cannot happen just because the enum is closed.
@@ -130,6 +134,14 @@ const char* status_message(Status s) noexcept {
             return "The supplied pixel buffer is too small for the requested render size.";
         case Status::PdfNotOpen:
             return "No PDF document is open on this handle.";
+
+        case Status::ConversionInputTooLarge:
+            return "The document being converted is larger than the conversion size limit.";
+        case Status::ConversionInputMalformed:
+            return "The document being converted contains a NUL byte and is not valid text.";
+        case Status::ConversionOutputTooLarge:
+            return "Converting this document would produce output past the conversion "
+                   "size limit.";
     }
     return "Unrecognised status code.";
 }

@@ -14,6 +14,21 @@ add_subdirectory(blocks)
 # is what enforces that rather than this comment.
 add_subdirectory(search)
 
+# core/conversion — the first concrete edge of spec section 10's conversion
+# engine: blocks::Page <-> Markdown, both directions, and ONLY Markdown. It
+# belongs in the portable domain layer because that is exactly what it is: a
+# pure in-memory transformation between the document model and a text format,
+# with no I/O and no platform API.
+#
+# Unlike core/search it DOES link a domain — core/blocks, PUBLIC-ly — because
+# the intermediate representation *is* blocks::Page rather than a second,
+# parallel document model (see core/conversion/include/uapp/conversion/
+# markdown.h, which records that decision and the correction it makes to
+# docs/conversion-architecture.md section 2.1). It does NOT link
+# storage/sqlite; the link line in core/conversion/CMakeLists.txt is what
+# enforces that rather than this comment.
+add_subdirectory(conversion)
+
 # core/capi is deliberately NOT added here. It is the composition root for the
 # slice and therefore links the SQLite adapter, so it has to be configured
 # after storage/. The top-level CMakeLists.txt adds it there, with a comment.

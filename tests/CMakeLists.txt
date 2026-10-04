@@ -98,6 +98,56 @@ set_tests_properties(uapp.search.unit uapp.search.edits uapp.search.deletes
                      uapp.search.hostile PROPERTIES TIMEOUT 120)
 
 # ---------------------------------------------------------------------------
+# core/conversion — Page/Block <-> Markdown (spec section 10).
+#
+# A separate executable, unconditional like core/search's: this module has NO
+# third-party dependency, so there is no build configuration in which it is
+# absent and nothing here reports "skipped" for code that was compiled.
+#
+# It links ONLY uapp::core_conversion, which brings uapp::core_blocks and
+# uapp::core_common with it and NOTHING ELSE. It therefore cannot reach
+# SQLite, core/notes, core/search, file-engine or the C ABI, so "a conversion
+# is a pure in-memory transformation of a value the caller already holds" is
+# checked by the link line rather than by review. If a conversion source ever
+# needed a database handle, this target would fail to link.
+#
+# It also reaches into core/conversion/src for markdown_syntax.h, which is NOT
+# a public header. That is deliberate: the escape/unescape pair is an
+# implementation detail with an invariant, and the invariant deserves direct
+# tests rather than coverage inferred from the public API on top of it.
+#
+# Three CTest entries over one binary, split by name filter, because the three
+# failure modes mean three different things:
+#   .escape     — the escaper and the unescaper are no longer inverses, which
+#                 is silent data corruption on round-trip and invalidates
+#                 every other case in the suite
+#   .roundtrip  — a block type or a nesting shape no longer survives the cycle
+#   .fidelity   — a documented lossy case changed behaviour or stopped being
+#                 reported, i.e. the converter started lying about what it did
+#   .bounds     — untrusted input got past a limit
+# ---------------------------------------------------------------------------
+add_executable(uapp_conversion_tests
+    support/test_main.cpp
+    conversion/markdown_syntax_test.cpp
+    conversion/markdown_test.cpp)
+
+target_include_directories(uapp_conversion_tests
+    PRIVATE support "${CMAKE_SOURCE_DIR}/core/conversion/src")
+
+target_link_libraries(uapp_conversion_tests
+    PRIVATE uapp::core_conversion uapp::compiler_options)
+
+add_test(NAME uapp.conversion.escape    COMMAND uapp_conversion_tests "conversion.escape")
+add_test(NAME uapp.conversion.syntax    COMMAND uapp_conversion_tests "conversion.syntax")
+add_test(NAME uapp.conversion.roundtrip COMMAND uapp_conversion_tests "conversion.roundtrip")
+add_test(NAME uapp.conversion.fidelity  COMMAND uapp_conversion_tests "conversion.fidelity")
+add_test(NAME uapp.conversion.bounds    COMMAND uapp_conversion_tests "conversion.bounds")
+
+set_tests_properties(uapp.conversion.escape uapp.conversion.syntax
+                     uapp.conversion.roundtrip uapp.conversion.fidelity
+                     uapp.conversion.bounds PROPERTIES TIMEOUT 300)
+
+# ---------------------------------------------------------------------------
 # core/sync/spike — the Fugue CRDT correctness spike (ADR-0002, SP-6 R-1..R-3).
 #
 # A separate executable, and the MOST isolated one in the tree: it links only

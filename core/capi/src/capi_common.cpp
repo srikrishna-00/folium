@@ -186,6 +186,31 @@ uapp_status_t to_c_status(Status s) noexcept {
         case Status::PdfRenderSizeInvalid:    return UAPP_STATUS_PDF_RENDER_SIZE_INVALID;
         case Status::PdfBufferTooSmall:       return UAPP_STATUS_PDF_BUFFER_TOO_SMALL;
         case Status::PdfNotOpen:              return UAPP_STATUS_PDF_NOT_OPEN;
+
+        // ===================================================================
+        // core/conversion (spec section 10): NOT MINTED, and this is the
+        // ORIGINAL precedent applied for a fourth time, not a reversal of it.
+        // ===================================================================
+        // The test the block/search entry above states explicitly is "whether
+        // the core grew a code", and the 0.3 entry adds the other half:
+        // whether a C caller can reach one. The core grew three codes; a C
+        // caller can reach none of them, because core/conversion has NO ABI
+        // header. Markdown conversion landed without one on the same reasoning
+        // blocks, search, file-engine and pdf-engine each landed on -- the
+        // module stabilises first, the frozen boundary follows.
+        //
+        // So these three are listed (the switch has no `default:`, so -Wswitch
+        // under -Werror is what forces whoever adds a Status code to come here
+        // and make a decision) and flattened to UAPP_STATUS_UNEXPECTED, with no
+        // UAPP_STATUS_CONVERSION_* constant minted. Nothing can produce one
+        // through this boundary today, so the flattening is unobservable; when
+        // a uapp_markdown.h exists, these become real constants in an 8xx
+        // block mirroring uapp::Status, exactly as the 5xx and 6xx/7xx groups
+        // did, and that is an additive MINOR bump.
+        case Status::ConversionInputTooLarge:
+        case Status::ConversionInputMalformed:
+        case Status::ConversionOutputTooLarge:
+            return UAPP_STATUS_UNEXPECTED;
     }
     // A code the core added and this layer has not been taught. We must not
     // guess a meaning for it; say so honestly instead.

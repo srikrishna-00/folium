@@ -12,6 +12,127 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `core/conversion`: `blocks::Page` ↔ Markdown, both directions (spec §10)
+
+**The first concrete edge of the conversion engine, and a correction to the architecture it
+implements.** `docs/conversion-architecture.md` §2.1 specified a `UDMDocument` type with
+styles, numbering, sections, resources and a 15-alternative `BlockNode` union. **That type is
+NOT IMPLEMENTED and is not what this converter translates through.** The Universal Document
+Model in this codebase is `blocks::Page` + `blocks::Block`, which ADR-0003 already made the
+project's one document representation; a second parallel model would make every conversion
+*two* lossy hops (Markdown → UDM → Page) and would let the editor and the converter disagree
+about what a document is. So the IR is the live domain model, and `UDMDocument` is re-scoped
+to the **superset `blocks::Block` must grow into as formats land — a backlog, not a type**.
+§2.1, §5.1 and §6.2 of that document are annotated to match, each gap naming its own
+authority; `core/conversion/include/uapp/conversion/markdown.h` says the same thing from the
+code side, and the two must not drift.
+
+Markdown first and **only** Markdown, for reasons that are properties of the format rather
+than preferences: it needs no third-party dependency and therefore no spec §35 licence
+review; CommonMark's leaf blocks are almost exactly the eight implemented block types; and it
+is useful with nothing else built (export a page to `.md`, import a `.md` as a page).
+
+- **What round-trips EXACTLY (Page → MD → Page → MD is a fixed point, asserted
+  byte-identically).** All eight block types with content, order and nesting: paragraph;
+  heading levels 1–3; bulleted, numbered and checklist items; fenced code with its language
+  tag; divider; quote. Numbered items are numbered **from sibling position**, never from the
+  payload, because that is where `core/blocks` says numbering lives. Nesting under a list item
+  works to any depth Markdown indentation allows and is **not limited to nested lists** — a
+  paragraph, heading, code block, divider or quote nested under an item round-trips too,
+  because the item's children are written at its content column and read back by recursively
+  parsing that indented range as a sub-document. Multi-line text in a paragraph, quote or list
+  item round-trips, **including an interior blank line**, and a text line that would itself
+  parse as a different block (`- not a bullet`, `1. not ordered`) is backslash-escaped on the
+  way out and unescaped on the way in.
+- **One lexer, one escape, and that is the whole correctness argument.** `src/markdown_syntax.h`
+  is shared by the writer and the reader so that the writer's "must I escape this line?" and
+  the reader's "does this line end the paragraph?" cannot drift into silent corruption. The
+  invariant `unescape_text_line(escape_text_line(t)) == t` holds for **every** input, not only
+  for trimmed input, and is tested directly before anything is built on it: 53 hand-picked
+  adversarial lines (one per rule, plus the backslash-heavy shapes that found bugs while it was
+  written) and **95 803 exhaustively generated strings** — every string of length 0–4 over the
+  14 characters the block classifiers react to, and every string of length 5–6 over the hot
+  subset. Each one is checked for two properties, not one: invertibility, *and* that the
+  escaped line is neither blank nor classifiable as a block start.
+- **What is lossy is lossy because of a GAP IN THE BLOCK MODEL, not a shortcut here**, and the
+  reasoning is not duplicated — each case names the `core/blocks` declaration that owns it.
+  Inline `**bold**` / `[text](url)` / `![alt](src)` are kept **verbatim**, byte for byte
+  (`preserved_note`/`inline_markup`): stripping the syntax to its plain text would destroy the
+  href, which is the one part a future span model could not reconstruct. Tables and images
+  become paragraph text (`approximated`/`table`, `/image`) — `BlockType::Table = 10` and
+  `Image = 11` are declared and NOT IMPLEMENTED, so there is no variant alternative to put
+  them in; the lines come back out unchanged, so a future Table type can re-parse them.
+  Heading levels 4–6 are **clamped to 3** (`heading_level_clamped`), not dropped and not
+  demoted to a paragraph — the one in-scope construct whose MD → Page → MD is deliberately not
+  byte-identical, because losing a heading's heading-ness is worse than losing one level of it.
+  Children of a non-list block are **flattened** to the parent's level in document order
+  (`nesting_flattened`) — Markdown derives nesting from containers only, and refusing the
+  export would make a legal page un-exportable. Leading/trailing whitespace in a text line is
+  normalised and reported (`text_line_whitespace`). A code info string containing whitespace
+  reads back as its first word (`code_language_truncated`); a backtick in the tag switches the
+  fence to `~~~`, which **can** carry it, so that case is lossless.
+- **Three read-side constructs are NOT IMPLEMENTED and are not silently mis-parsed.** `---`
+  under a paragraph resolves as a **thematic break**, not a setext heading, because that is
+  what this module's own exporter means by it — the alternative would re-import every exported
+  paragraph-then-divider pair as a heading, i.e. break the round-trip the module exists for; a
+  `===` run becomes paragraph text and is reported (`setext_heading`). An indented code block
+  is paragraph text (`indented_code_block`), because indentation is reserved for list nesting.
+  Link reference definitions, footnotes, front matter, HTML blocks and block equations are kept
+  verbatim as paragraph text (`preserved_note`/`unmodelled_block`).
+- **Nothing is silently dropped, and `lost_content()` is false by construction.** There is no
+  input this converter discards without either returning a non-Ok `Status` or filing a
+  `FidelityReport` entry. `Fidelity::Dropped` is declared — the report shape is shared with
+  converters that will need it — and is **never emitted here**, which the suite asserts over a
+  document containing every lossy construct at once. Entries aggregate by
+  `(severity, construct)`, so a 40 000-line file with a table on every line produces one entry
+  and not 40 000 unbounded allocations driven by untrusted input (spec §38).
+- **Both directions are bounded, because both are driven by untrusted input** — a `.md` file on
+  import, a synced or restored page on export. 16 MiB in, 16 MiB out, each with its own cap
+  because a page at the block model's own limits would serialise to ~50 GB. Failure modes, all
+  tested: `CONVERSION_INPUT_TOO_LARGE`, `CONVERSION_INPUT_MALFORMED` (an embedded NUL, which
+  would truncate at the first C ABI boundary exactly as `validate_block_content` rejects one),
+  `CONVERSION_OUTPUT_TOO_LARGE` with `out` left **empty rather than half-written**, plus the
+  **existing** 5xx codes for everything that is really a block-model violation —
+  `BLOCK_DEPTH_EXCEEDED` (list nesting past `kMaxBlockDepth`, checked on entry so a 4 000-level
+  file costs 64 frames and a `Status`, not a stack), `BLOCK_TEXT_TOO_LARGE`,
+  `PAGE_BLOCK_LIMIT_EXCEEDED`. Three new `uapp::Status` codes and **no new ABI constant**: see
+  "Not implemented" below. Empty or whitespace-only input is `Ok` with zero blocks, because an
+  empty document is a legal empty page and reporting a non-error as an error is its own lie.
+- **Isolation is a property of the link graph, not of a comment.** `uapp::core_conversion`
+  links `uapp::core_blocks` (PUBLIC — the IR *is* `blocks::Page`) and nothing else; the test
+  binary links only `uapp::core_conversion`. `nm -u` on the built archive shows **zero**
+  `sqlite3_*`, `uapp::notes`, `uapp_capi` or PDFium imports — its only first-party undefined
+  symbols are four `core/blocks` validators plus `block_type_of`, `object_id_is_nil`, and its
+  own internal lexer —
+  and `otool -L` on the linked test binary shows only `libc++` and `libSystem`. A conversion is
+  a pure in-memory transformation of a value the caller already holds; if it could reach a
+  database handle it would need a transaction story it has no business having.
+- **Results. 45 cases, 45 pass, in one new binary and five CTest entries** (CTest goes 24 → 29):
+  13 on the lexer and the escape invariant (incl. the 95 803 generated inputs), 11 on
+  round-tripping (eight block types, multi-line text, nested lists, non-list blocks under a
+  list item, sibling-position numbering, a realistic 14-block mixed document, both halves of
+  the title option, empty input, fence sizing, CRLF, nesting at exactly `kMaxBlockDepth`), 13
+  on fidelity (two on the report's own aggregation, then **one per documented lossy construct**,
+  each asserting the construct id, the severity *and* the resulting text — not merely that
+  nothing crashed), and 8 on bounded failure. Clean under Debug and under Debug + ASan/UBSan
+  (`-DUAPP_ENABLE_SANITIZERS=ON`), `-Werror -fno-exceptions -fno-rtti` throughout, zero
+  warnings. One real bug was found and fixed by the suite: a list item's trailing blank lines
+  were being recursed into as a child region, which cost a depth level for no block and failed
+  a file nested exactly `kMaxBlockDepth` deep at its last item.
+- **NOT IMPLEMENTED, and deliberately so.** **Every other format**: DOCX, PDF, HTML, EPUB, RTF,
+  ODT, TXT and every other row of `conversion-architecture.md` §5. Each needs a real format
+  parser, and the Office/EPUB rows need third-party libraries that do not exist in this
+  repository and have not had the spec §35 licence review; none of them is faked, and §5.1 is
+  annotated to say exactly one of its cells is real. There is also **no `ConversionPlanner`, no
+  capability graph and no job protocol** — this is one edge of §4's graph, implemented, not the
+  graph. And **no C ABI**: `uapp::Status` grew `ConversionInputTooLarge` / `…InputMalformed` /
+  `…OutputTooLarge` (800–802), but `core/capi` mints **no** `UAPP_STATUS_CONVERSION_*`
+  constant and flattens all three to `UAPP_STATUS_UNEXPECTED` — unobservably, since no C
+  caller can reach a conversion today. That is the precedent `core/blocks`, `core/search`,
+  `file-engine` and `pdf-engine` each landed on, applied a fourth time rather than reversed:
+  the module stabilises first, the frozen boundary follows. When a `uapp_markdown.h` exists
+  these become real constants in an 8xx block and that is an additive MINOR bump.
+
 ### Added — `core/sync/spike`: the Fugue CRDT correctness spike (ADR-0002, SP-6 R-1/R-2/R-3)
 
 **Research code, not a product module, and the build graph says so.** `uapp::sync_fugue_spike`
