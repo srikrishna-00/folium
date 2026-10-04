@@ -56,6 +56,19 @@ UAPP_CAPI_ASSERT_CODE(BlockPositionInvalid, UAPP_STATUS_BLOCK_POSITION_INVALID);
 UAPP_CAPI_ASSERT_CODE(BlockCycleDetected, UAPP_STATUS_BLOCK_CYCLE_DETECTED);
 UAPP_CAPI_ASSERT_CODE(PageTitleTooLong, UAPP_STATUS_PAGE_TITLE_TOO_LONG);
 UAPP_CAPI_ASSERT_CODE(PageBlockLimitExceeded, UAPP_STATUS_PAGE_BLOCK_LIMIT_EXCEEDED);
+UAPP_CAPI_ASSERT_CODE(FileEmpty, UAPP_STATUS_FILE_EMPTY);
+UAPP_CAPI_ASSERT_CODE(FilePathInvalid, UAPP_STATUS_FILE_PATH_INVALID);
+UAPP_CAPI_ASSERT_CODE(FileOpenFailed, UAPP_STATUS_FILE_OPEN_FAILED);
+UAPP_CAPI_ASSERT_CODE(FileReadFailed, UAPP_STATUS_FILE_READ_FAILED);
+UAPP_CAPI_ASSERT_CODE(PdfMalformed, UAPP_STATUS_PDF_MALFORMED);
+UAPP_CAPI_ASSERT_CODE(PdfPasswordRequired, UAPP_STATUS_PDF_PASSWORD_REQUIRED);
+UAPP_CAPI_ASSERT_CODE(PdfSecurityUnsupported, UAPP_STATUS_PDF_SECURITY_UNSUPPORTED);
+UAPP_CAPI_ASSERT_CODE(PdfPageNotFound, UAPP_STATUS_PDF_PAGE_NOT_FOUND);
+UAPP_CAPI_ASSERT_CODE(PdfPageLoadFailed, UAPP_STATUS_PDF_PAGE_LOAD_FAILED);
+UAPP_CAPI_ASSERT_CODE(PdfRenderFailed, UAPP_STATUS_PDF_RENDER_FAILED);
+UAPP_CAPI_ASSERT_CODE(PdfRenderSizeInvalid, UAPP_STATUS_PDF_RENDER_SIZE_INVALID);
+UAPP_CAPI_ASSERT_CODE(PdfBufferTooSmall, UAPP_STATUS_PDF_BUFFER_TOO_SMALL);
+UAPP_CAPI_ASSERT_CODE(PdfNotOpen, UAPP_STATUS_PDF_NOT_OPEN);
 
 #undef UAPP_CAPI_ASSERT_CODE
 
@@ -145,43 +158,34 @@ uapp_status_t to_c_status(Status s) noexcept {
         // argues for minting when a surface appears -- the test is whether the
         // core grew a code, not whether the ABI grew a header.
 
-        // file-engine/detection (spec section 8/9). These KEEP the old
-        // treatment -- listed so the tripwire keeps working, mapped to
-        // UAPP_STATUS_UNEXPECTED, no new constant minted -- and the reason is
-        // the one the blocks block above says stopped applying to IT: there is
-        // still no file ABI, so nothing reachable through this boundary can
-        // return one of these. The precedent was never "flatten forever", it
-        // was "do not mint a vocabulary for a surface that does not exist".
-        // That is still exactly the case here. The file ABI will choose its
-        // own codes when it exists, and this run explicitly did not build it.
-        case Status::FileEmpty:
-        case Status::FilePathInvalid:
-        case Status::FileOpenFailed:
-        case Status::FileReadFailed:
-            return UAPP_STATUS_UNEXPECTED;
-
-        // pdf-engine/reader (spec section 11, viewing only) added these, and
-        // the file-engine paragraph above applies unchanged. This switch is an
-        // exhaustive tripwire by design, so adding a core status without
-        // listing it here is a compile error — which is why this block
-        // exists at all, and it is the only edit pdf-engine made to core/capi.
-        //
-        // Worth restating for this group specifically: PDF is the subsystem
-        // most likely to want a rich ABI vocabulary — a viewer must tell the
-        // user "wrong password" differently from "this file is damaged" —
-        // and that is exactly why no UAPP_STATUS_* constant is minted today.
-        // The PDF ABI gets designed when there is a PDF ABI, not inferred
-        // from the first nine statuses the C++ reader happened to need.
-        case Status::PdfMalformed:
-        case Status::PdfPasswordRequired:
-        case Status::PdfSecurityUnsupported:
-        case Status::PdfPageNotFound:
-        case Status::PdfPageLoadFailed:
-        case Status::PdfRenderFailed:
-        case Status::PdfRenderSizeInvalid:
-        case Status::PdfBufferTooSmall:
-        case Status::PdfNotOpen:
-            return UAPP_STATUS_UNEXPECTED;
+        // file-engine/detection (spec section 8/9) and pdf-engine/reader
+        // (spec section 11, viewing only), ABI 0.3. These USED to be
+        // flattened to UAPP_STATUS_UNEXPECTED with no constant minted, on the
+        // reasoning the blocks/search commit established: "do not mint a
+        // vocabulary for a surface that does not exist." uapp_file.h and
+        // uapp_pdf.h are that surface now -- every one of these thirteen
+        // codes is reachable through the C ABI for the first time -- so, on
+        // the SAME reasoning applied a third time, they are minted as real
+        // constants instead. See uapp_capi.h's ABI 0.3 version-history entry
+        // and the note on uapp_pdf_is_available() for the one wrinkle this
+        // group has that the blocks/search group did not: the PDF codes
+        // exist in this enum UNCONDITIONALLY, even in a build with no
+        // PDFium vendored, because a status code whose value depends on a
+        // CMake switch is not a stable code -- a PDF-less build simply never
+        // produces one.
+        case Status::FileEmpty:        return UAPP_STATUS_FILE_EMPTY;
+        case Status::FilePathInvalid:  return UAPP_STATUS_FILE_PATH_INVALID;
+        case Status::FileOpenFailed:   return UAPP_STATUS_FILE_OPEN_FAILED;
+        case Status::FileReadFailed:   return UAPP_STATUS_FILE_READ_FAILED;
+        case Status::PdfMalformed:            return UAPP_STATUS_PDF_MALFORMED;
+        case Status::PdfPasswordRequired:     return UAPP_STATUS_PDF_PASSWORD_REQUIRED;
+        case Status::PdfSecurityUnsupported:  return UAPP_STATUS_PDF_SECURITY_UNSUPPORTED;
+        case Status::PdfPageNotFound:         return UAPP_STATUS_PDF_PAGE_NOT_FOUND;
+        case Status::PdfPageLoadFailed:       return UAPP_STATUS_PDF_PAGE_LOAD_FAILED;
+        case Status::PdfRenderFailed:         return UAPP_STATUS_PDF_RENDER_FAILED;
+        case Status::PdfRenderSizeInvalid:    return UAPP_STATUS_PDF_RENDER_SIZE_INVALID;
+        case Status::PdfBufferTooSmall:       return UAPP_STATUS_PDF_BUFFER_TOO_SMALL;
+        case Status::PdfNotOpen:              return UAPP_STATUS_PDF_NOT_OPEN;
     }
     // A code the core added and this layer has not been taught. We must not
     // guess a meaning for it; say so honestly instead.
@@ -259,6 +263,19 @@ const char* uapp_status_code(uapp_status_t status) {
         case UAPP_STATUS_BLOCK_CYCLE_DETECTED:
         case UAPP_STATUS_PAGE_TITLE_TOO_LONG:
         case UAPP_STATUS_PAGE_BLOCK_LIMIT_EXCEEDED:
+        case UAPP_STATUS_FILE_EMPTY:
+        case UAPP_STATUS_FILE_PATH_INVALID:
+        case UAPP_STATUS_FILE_OPEN_FAILED:
+        case UAPP_STATUS_FILE_READ_FAILED:
+        case UAPP_STATUS_PDF_MALFORMED:
+        case UAPP_STATUS_PDF_PASSWORD_REQUIRED:
+        case UAPP_STATUS_PDF_SECURITY_UNSUPPORTED:
+        case UAPP_STATUS_PDF_PAGE_NOT_FOUND:
+        case UAPP_STATUS_PDF_PAGE_LOAD_FAILED:
+        case UAPP_STATUS_PDF_RENDER_FAILED:
+        case UAPP_STATUS_PDF_RENDER_SIZE_INVALID:
+        case UAPP_STATUS_PDF_BUFFER_TOO_SMALL:
+        case UAPP_STATUS_PDF_NOT_OPEN:
         case UAPP_STATUS_FORCE_INT32:
         case UAPP_STATUS_FORCE_INT32_MIN:
             break;
@@ -301,6 +318,19 @@ const char* uapp_status_message(uapp_status_t status) {
         case UAPP_STATUS_BLOCK_CYCLE_DETECTED:
         case UAPP_STATUS_PAGE_TITLE_TOO_LONG:
         case UAPP_STATUS_PAGE_BLOCK_LIMIT_EXCEEDED:
+        case UAPP_STATUS_FILE_EMPTY:
+        case UAPP_STATUS_FILE_PATH_INVALID:
+        case UAPP_STATUS_FILE_OPEN_FAILED:
+        case UAPP_STATUS_FILE_READ_FAILED:
+        case UAPP_STATUS_PDF_MALFORMED:
+        case UAPP_STATUS_PDF_PASSWORD_REQUIRED:
+        case UAPP_STATUS_PDF_SECURITY_UNSUPPORTED:
+        case UAPP_STATUS_PDF_PAGE_NOT_FOUND:
+        case UAPP_STATUS_PDF_PAGE_LOAD_FAILED:
+        case UAPP_STATUS_PDF_RENDER_FAILED:
+        case UAPP_STATUS_PDF_RENDER_SIZE_INVALID:
+        case UAPP_STATUS_PDF_BUFFER_TOO_SMALL:
+        case UAPP_STATUS_PDF_NOT_OPEN:
         case UAPP_STATUS_FORCE_INT32:
         case UAPP_STATUS_FORCE_INT32_MIN:
             break;
@@ -316,6 +346,24 @@ void uapp_free_string(char** string) {
         delete[] *string;
         *string = nullptr;
     UAPP_CAPI_GUARD_END_VOID
+}
+
+// Defined here, in the translation unit that is ALWAYS built, rather than in
+// capi_pdf.cpp, which is built only when UAPP_PDF_ENABLED is set. A caller
+// must be able to ask this question before knowing whether capi_pdf.cpp's
+// symbols exist in the library at all -- see the long note on this function
+// in uapp_capi.h. UAPP_PDF_ENABLED is a compile definition the root
+// CMakeLists.txt attaches to this file specifically when, and only when,
+// pdf-engine/ itself is built (UAPP_ENABLE_PDF resolved to ON via AUTO or
+// explicitly).
+uapp_bool_t uapp_pdf_is_available(void) {
+    UAPP_CAPI_GUARD_BEGIN
+#if defined(UAPP_PDF_ENABLED) && UAPP_PDF_ENABLED
+        return UAPP_TRUE;
+#else
+        return UAPP_FALSE;
+#endif
+    UAPP_CAPI_GUARD_END_FALLBACK(UAPP_FALSE)
 }
 
 }  // extern "C"

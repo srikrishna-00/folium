@@ -12,6 +12,78 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `core/capi`: file detection and PDF viewing C ABI (ABI **0.3**, spec §8/§9/§11, §30)
+
+Closes the last mobile-bridge gap the 0.2 entry below left open in its own NOT IMPLEMENTED
+list: `core/capi` now exposes every module that exists in the repository. `uapp_file.h` wraps
+`file-engine/detection` and `uapp_pdf.h` wraps `pdf-engine/reader`; OCR/scanner/sync/AI remain
+absent because those engines do not exist yet, not because the boundary skipped them.
+
+- **`uapp_file.h` — stateless, no handles, and that is a property of the module, not an
+  oversight.** `file-engine/detection` holds no state (pure functions over bytes, const
+  registry tables), so this is the one ABI surface with nothing to open, nothing to close, no
+  magic cookie, and no use-after-close failure mode. Covers the full registry (format/category/
+  mime-type/capability lookups, all total over a bogus integer), the "is detection implemented
+  for format X, and if not, why" query path (the file-engine half of the precedent
+  `uapp_block_type_is_implemented()` set), and the four detect/describe entry points
+  (buffer-first, matching `file-engine/detection`'s own design). One flat `uapp_file_info_t`
+  struct covers both C++ result types (`DetectionResult` and `File`) side by side rather than
+  mirroring the split, so a caller wanting a confidence AND a checksum makes one call, not two.
+- **`uapp_pdf.h` — one opaque `uapp_pdf_document_t` handle, no separate `Library` handle.**
+  The C++ layer's `Document` already owns its own `Library` (PDFium's refcounted process-global
+  init/destroy) as a member, so exposing `Library` separately would be API surface — a second
+  handle type a Kotlin/Swift binding has to bind, document and get the lifetime of right — for
+  a benefit (amortising per-document init cost across a tight loop of opens) a document viewer
+  does not need: it opens a handful of PDFs per session, not thousands in a loop. Documented as
+  a noted tradeoff, not a silent one, and reversible later as a genuinely additive surface if a
+  real workload ever needs it. Render is zero-copy through the ABI exactly as in the C++ layer:
+  `uapp_pdf_render_page()` writes into a caller-owned buffer (the pixels behind
+  `AndroidBitmap_lockPixels()` on Android, `CGBitmapContextGetData()` on iOS) and never
+  allocates or copies a bitmap internally — adding a copy at this boundary that the C++ layer
+  refuses to do would silently reopen the budget `SP-5-findings.md` closed structurally.
+- **`uapp_pdf_is_available()`** (declared in `uapp_capi.h`, implemented in `capi_common.cpp`,
+  which is always built) is how a binding asks whether the optional PDF surface exists in THIS
+  library before calling anything in `uapp_pdf.h` — `pdf-engine/` builds only when a PDFium is
+  vendored (`UAPP_ENABLE_PDF`, AUTO by default), so a fresh clone with no `third_party/pdfium`
+  produces a library with no PDF functions in it at all, and calling one would be a link error
+  (static) or a missing-symbol abort (shared). The 9 PDF `Status` codes (700-708) exist in
+  `uapp_status_t` UNCONDITIONALLY regardless of this, on purpose: a status code whose value
+  depends on a CMake switch is not a stable code, and a PDF-less build simply never produces
+  one. `uapp_pdf.h`'s own functions are compiled only when `UAPP_PDF_ENABLED` is set by the
+  root `CMakeLists.txt`, gated by `target_sources`/`target_compile_definitions` in
+  `core/capi/CMakeLists.txt`, not by a runtime branch inside an always-present stub.
+- **13 new `Status` codes minted as real `UAPP_STATUS_*` constants** (`FILE_EMPTY` /
+  `FILE_PATH_INVALID` / `FILE_OPEN_FAILED` / `FILE_READ_FAILED` at 600-603,
+  `PDF_MALFORMED` / `PDF_PASSWORD_REQUIRED` / `PDF_SECURITY_UNSUPPORTED` /
+  `PDF_PAGE_NOT_FOUND` / `PDF_PAGE_LOAD_FAILED` / `PDF_RENDER_FAILED` /
+  `PDF_RENDER_SIZE_INVALID` / `PDF_BUFFER_TOO_SMALL` / `PDF_NOT_OPEN` at 700-708) — the third
+  application of the reachability rule the blocks/search entry below established: these
+  thirteen codes existed in `uapp::Status` and were flattened to `UAPP_STATUS_UNEXPECTED` for
+  exactly as long as nothing behind the C boundary could produce one. `uapp_file.h`/`uapp_pdf.h`
+  end that for all thirteen in one pass, so they are minted rather than kept flattened — not a
+  new rule, the same one applied a third time. This is a MINOR bump (0.2 → 0.3): additive, a
+  0.2-built caller runs unmodified against 0.3.
+- **Tests, real, across all three build configurations this entry's work requires checking**:
+  `uapp_file_capi_tests` (12 assertions: the format/capability registry, real-byte detection for
+  PNG/JPEG/PDF/plain-text, a renamed file setting `extension_conflicts` without touching
+  `format`, DOCX vs XLSX disambiguation through a hand-built ZIP central directory, boundary
+  cases for empty/null/malformed input and a bogus enum value) and `uapp_pdf_capi_tests` (10
+  assertions: open/count/measure/render through the C API only, a render that honours a padded
+  stride — proof row 1 starts at the real stride and not at a tightly-packed `width * 4` — and
+  boundary cases for malformed PDF bytes, an undersized render buffer, and use-after-close).
+  `ctest` **24/24** (was 20/20) in a normal Debug build and clean under Debug+ASan/UBSan; **19/19**
+  with `-DUAPP_ENABLE_PDF=OFF` (the PDF suites are not compiled, not skipped — confirmed no
+  `uapp_pdf_*` object file exists in that build), and `uapp_pdf_is_available()` confirmed to
+  return `0` in that same PDF-disabled build by linking a standalone check program against it.
+  All six public headers (`uapp_capi.h`, `uapp_notes.h`, `uapp_blocks.h`, `uapp_search.h`,
+  `uapp_file.h`, `uapp_pdf.h`) confirmed to compile together standalone under
+  `clang -std=c99 -pedantic-errors`.
+
+NOT IMPLEMENTED: everything the two wrapped C++ modules already declare out of scope (detection
+for the ~35 undetected formats, PDF editing/merge/split/forms/annotation/signatures — see those
+modules' own changelog entries), plus a FlatBuffers bulk-transfer payload, a change-notification
+mechanism, and concurrent-multi-handle-access proof for these two new surfaces specifically.
+
 ### Added — `core/capi`: the page/block and unified-search C ABI (ABI **0.2**, spec §14/§16, §30)
 
 `core/capi` existed but exposed `NoteService` and nothing else, and the previous two entries
@@ -284,10 +356,11 @@ exactly as little as a test that cannot fail.
 
 #### NOT IMPLEMENTED (spec §5) — deferred, with reasons
 
-- **No C ABI for `file-engine/detection` or `pdf-engine/reader`.** Out of scope by instruction
-  this run; both were already built and tested in C++. Their `Status` codes stay mapped to
-  `UAPP_STATUS_UNEXPECTED`, which is the honest answer while nothing reachable through the
-  boundary can produce one.
+- **~~No C ABI for `file-engine/detection` or `pdf-engine/reader`.~~** *(CLOSED by the ABI 0.3
+  entry below: `uapp_file.h` and `uapp_pdf.h` now cover both, their `Status` codes are minted
+  as real `UAPP_STATUS_FILE_*`/`UAPP_STATUS_PDF_*` constants on the same reachability
+  reasoning this entry used for blocks/search, and `core/capi` now has a C ABI surface for
+  every module that exists in the repository.)*
 - **No OCR, scanner, sync or AI ABI.** Those engines do not exist.
 - **Deferred: `append_block` and `get_block`.** `DocumentService` has both;
   `uapp_document_service_add_block(..., UAPP_BLOCK_POSITION_APPEND, ...)` is `append_block`

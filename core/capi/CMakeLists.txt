@@ -16,16 +16,33 @@
 # binding reads uapp_blocks.h and finds capi_blocks.cpp, and the shared-library
 # export set (when it lands) is a per-surface decision rather than a hunt
 # through one large file.
+# capi_file.cpp is unconditional: file-engine/detection has no third-party
+# dependency, so its ABI surface is always built, unlike capi_pdf.cpp below.
 add_library(uapp_capi STATIC
     src/capi_common.cpp
     src/capi_notes.cpp
     src/capi_blocks.cpp
-    src/capi_search.cpp)
+    src/capi_search.cpp
+    src/capi_file.cpp)
 add_library(uapp::capi ALIAS uapp_capi)
 
 target_include_directories(uapp_capi
     PUBLIC  include
     PRIVATE src)
+
+# capi_pdf.cpp exists only when pdf-engine/ itself was built (UAPP_PDF_ENABLED,
+# resolved by the root CMakeLists.txt from UAPP_ENABLE_PDF). uapp_pdf_is_available()
+# — the one symbol that must always exist so a binding can ask the question —
+# lives in capi_common.cpp instead, gated at the PREPROCESSOR level by the
+# UAPP_PDF_ENABLED compile definition below, not by which .cpp files are in
+# this target.
+if(UAPP_PDF_ENABLED)
+    target_sources(uapp_capi PRIVATE src/capi_pdf.cpp)
+    target_link_libraries(uapp_capi PRIVATE uapp::pdf_reader)
+    target_compile_definitions(uapp_capi PRIVATE UAPP_PDF_ENABLED=1)
+else()
+    target_compile_definitions(uapp_capi PRIVATE UAPP_PDF_ENABLED=0)
+endif()
 
 # This target is the COMPOSITION ROOT for all three slices: it is where the
 # abstract NoteStore, BlockStore and SearchIndex ports are bound to their
@@ -46,7 +63,7 @@ target_include_directories(uapp_capi
 # C++-only compile flag reaches them — which is what lets tests/capi build with
 # a C compiler at -std=c99 -Wpedantic -Werror.
 target_link_libraries(uapp_capi
-    PRIVATE uapp::storage_sqlite uapp::compiler_options)
+    PRIVATE uapp::storage_sqlite uapp::file_detection uapp::compiler_options)
 
 # The public headers must not need a C++ compiler, a C++ standard library, or
 # any of this project's private include paths. They pull in <stddef.h> and

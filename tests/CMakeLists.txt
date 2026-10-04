@@ -251,6 +251,30 @@ set_tests_properties(uapp.capi.search.slice uapp.capi.search.boundary
                      PROPERTIES TIMEOUT 120)
 
 # ---------------------------------------------------------------------------
+# FILE DETECTION C ABI, exercised from C (ABI 0.3, uapp/capi/uapp_file.h).
+#
+# A FOURTH C executable. Unconditional, like file-engine/detection itself:
+# this surface has no third-party dependency, so there is no build
+# configuration in which it is absent. It links ONLY uapp::capi and includes
+# only uapp_file.h/uapp_capi.h, matching uapp_file.h's own claim that this is
+# the one surface in the ABI with no handle and no state — no scratch
+# database path needed, unlike the three test executables above it.
+# ---------------------------------------------------------------------------
+add_executable(uapp_file_capi_tests capi/file_capi_test.c)
+
+target_include_directories(uapp_file_capi_tests PRIVATE capi)
+
+target_link_libraries(uapp_file_capi_tests PRIVATE uapp::capi uapp::compiler_options)
+
+set_target_properties(uapp_file_capi_tests PROPERTIES LINKER_LANGUAGE CXX)
+
+add_test(NAME uapp.capi.file.slice    COMMAND uapp_file_capi_tests "slice:")
+add_test(NAME uapp.capi.file.boundary COMMAND uapp_file_capi_tests "boundary:")
+
+set_tests_properties(uapp.capi.file.slice uapp.capi.file.boundary
+                     PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
 # pdf-engine/reader — spec section 11, the viewing slice only.
 #
 # Conditional, and that is the point of the condition: PDF support depends on
@@ -291,5 +315,27 @@ if(UAPP_PDF_ENABLED)
     add_test(NAME uapp.pdf.malformed COMMAND uapp_pdf_tests "pdf.malformed")
 
     set_tests_properties(uapp.pdf.read uapp.pdf.render uapp.pdf.malformed
+                         PROPERTIES TIMEOUT 120)
+
+    # ------------------------------------------------------------------------
+    # PDF C ABI, exercised from C (ABI 0.3, uapp/capi/uapp_pdf.h).
+    #
+    # A SIXTH executable, conditional for the same reason uapp_pdf_tests above
+    # is: uapp_pdf.h's functions do not exist in a library built without a
+    # vendored PDFium, so this file is not even compiled when UAPP_PDF_ENABLED
+    # is false, rather than compiled and skipped at runtime.
+    # ------------------------------------------------------------------------
+    add_executable(uapp_pdf_capi_tests capi/pdf_capi_test.c)
+
+    target_include_directories(uapp_pdf_capi_tests PRIVATE capi)
+
+    target_link_libraries(uapp_pdf_capi_tests PRIVATE uapp::capi uapp::compiler_options)
+
+    set_target_properties(uapp_pdf_capi_tests PROPERTIES LINKER_LANGUAGE CXX)
+
+    add_test(NAME uapp.capi.pdf.slice    COMMAND uapp_pdf_capi_tests "slice:")
+    add_test(NAME uapp.capi.pdf.boundary COMMAND uapp_pdf_capi_tests "boundary:")
+
+    set_tests_properties(uapp.capi.pdf.slice uapp.capi.pdf.boundary
                          PROPERTIES TIMEOUT 120)
 endif()

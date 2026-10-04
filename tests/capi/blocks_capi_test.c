@@ -218,13 +218,19 @@ static void test_enum_range_is_pinned_both_ways(void) {
     CHECK(strcmp(uapp_status_code(UAPP_STATUS_BLOCK_MALFORMED), "UNEXPECTED") != 0);
     CHECK(strcmp(uapp_status_code(UAPP_STATUS_BLOCK_TYPE_UNSUPPORTED), "UNEXPECTED") != 0);
 
-    /* ABI 0.2, and a 0.1 caller still runs: the bump is additive. */
+    /* ABI 0.3 (file+pdf landed after this test was first written), and a 0.1
+     * caller still runs: every bump so far has been additive. */
     CHECK(uapp_abi_version_major() == 0u);
-    CHECK(uapp_abi_version_minor() == 2u);
-    CHECK_STR(uapp_abi_version_string(), "0.2");
+    CHECK(uapp_abi_version_minor() == 3u);
+    CHECK_STR(uapp_abi_version_string(), "0.3");
     CHECK(UAPP_ABI_ASSERT_COMPATIBLE() == UAPP_TRUE);
     CHECK(uapp_abi_is_compatible(0u, 1u) == UAPP_TRUE);
-    CHECK(uapp_abi_is_compatible(0u, 3u) == UAPP_FALSE);
+    /* A caller built against a NEWER minor than this library has is the
+     * incompatible direction -- it may call a function that does not exist
+     * here. 4 is "one past whatever this library's own minor is" rather than
+     * a hard-coded future version, so this assertion does not go stale the
+     * next time the ABI grows additively. */
+    CHECK(uapp_abi_is_compatible(0u, UAPP_ABI_VERSION_MINOR + 1u) == UAPP_FALSE);
 }
 
 static void test_content_init_defaults(void) {

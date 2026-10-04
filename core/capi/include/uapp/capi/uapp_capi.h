@@ -18,6 +18,16 @@
  *   * uapp/capi/uapp_notes.h   -- the flat note slice
  *   * uapp/capi/uapp_blocks.h  -- pages and blocks (the document model)
  *   * uapp/capi/uapp_search.h  -- unified search across notes and pages/blocks
+ *   * uapp/capi/uapp_file.h    -- file-type detection (stateless; no handles)
+ *   * uapp/capi/uapp_pdf.h     -- read-only PDF: open, measure, render
+ *                                 OPTIONAL. See uapp_pdf_is_available() below;
+ *                                 it is the one surface whose presence depends
+ *                                 on a third-party binary the build may not
+ *                                 have.
+ *
+ * Those five are ALL of them. Every module that exists in this repository now
+ * has a C ABI; the surfaces still absent (OCR, scanner, sync, AI) are absent
+ * because the engines are, not because the boundary skipped them.
  *
  * LANGUAGE LEVEL
  *   Strict C99. architecture.md section 8 rule 5 requires that capi headers
@@ -127,10 +137,31 @@ extern "C" {
  *        unmodified against 0.2 -- which is exactly what the additive-only
  *        rule above says and what uapp_abi_is_compatible(0, 1) still answers
  *        UAPP_TRUE to.
+ *   0.3  ADDITIVE. uapp_file.h (file-type detection) and uapp_pdf.h
+ *        (read-only PDF) appear, and with them the 6xx file-engine and 7xx
+ *        pdf-engine codes in uapp_status_t. Those codes already existed in
+ *        uapp::Status and were FLATTENED to UAPP_STATUS_UNEXPECTED for exactly
+ *        as long as nothing behind this boundary could produce one; these two
+ *        headers end that, so they are minted. Same reasoning, same shape and
+ *        same minor-bump conclusion as 0.2 -- see the long note in
+ *        core/capi/src/capi_common.cpp, which now records the SECOND
+ *        application of the rule rather than its first exception.
+ *
+ *        ONE WRINKLE, AND IT IS THE ONLY ONE IN THE VERSION HISTORY: the PDF
+ *        surface is OPTIONAL at build time, because pdf-engine/ is built only
+ *        when a PDFium is vendored (UAPP_ENABLE_PDF, see the root
+ *        CMakeLists.txt). The ABI VERSION does not vary with that -- 0.3 is
+ *        0.3 either way, the status codes are present either way, and
+ *        uapp_abi_is_compatible() answers about the version and nothing else.
+ *        What varies is whether the uapp_pdf_* FUNCTIONS are in the library,
+ *        and the one symbol that answers THAT is uapp_pdf_is_available(),
+ *        which is always present. Folding "PDF is missing" into the version
+ *        would have been wrong twice over: it is not a version difference, and
+ *        a binding needs a runtime answer, not a compile-time one.
  */
 #define UAPP_ABI_VERSION_MAJOR  0
-#define UAPP_ABI_VERSION_MINOR  2
-#define UAPP_ABI_VERSION_STRING "0.2"
+#define UAPP_ABI_VERSION_MINOR  3
+#define UAPP_ABI_VERSION_STRING "0.3"
 
 /* Boolean across the boundary. Not <stdbool.h>'s bool: its size is
  * implementation-defined, and an ABI cannot afford that. */
@@ -215,6 +246,42 @@ typedef enum uapp_status {
     UAPP_STATUS_BLOCK_CYCLE_DETECTED      = 505, /* a move would make a block its own ancestor */
     UAPP_STATUS_PAGE_TITLE_TOO_LONG       = 506,
     UAPP_STATUS_PAGE_BLOCK_LIMIT_EXCEEDED = 507,
+
+    /* file engine (6xx) -- added in ABI 0.3 alongside uapp_file.h, on exactly
+     * the reasoning the 5xx block records: these four existed in uapp::Status
+     * from the file-engine commit and were mapped to UAPP_STATUS_UNEXPECTED
+     * for precisely as long as no C caller could reach code that returns one.
+     * uapp_file.h makes all four reachable -- FILE_EMPTY from a zero-byte
+     * buffer or file, the other three from uapp_file_detect_path() and
+     * uapp_file_describe_path() -- so they are minted. */
+    UAPP_STATUS_FILE_EMPTY        = 600, /* zero bytes in; NOT "unrecognised" */
+    UAPP_STATUS_FILE_PATH_INVALID = 601, /* empty path, or one containing a NUL */
+    UAPP_STATUS_FILE_OPEN_FAILED  = 602,
+    UAPP_STATUS_FILE_READ_FAILED  = 603, /* opened, then failed part-way through */
+
+    /* PDF engine (7xx) -- added in ABI 0.3 alongside uapp_pdf.h.
+     *
+     * These nine are present in the enum UNCONDITIONALLY, even in a library
+     * built without PDFium where no uapp_pdf_* function exists. That is
+     * deliberate: uapp_status_t is one flat append-only numbering shared by
+     * every build of this ABI, and a status code whose VALUE depends on a
+     * CMake switch is not a stable code at all. A PDF-less build simply never
+     * returns one.
+     *
+     * The grouping is the one capi_common.cpp singled out as "the subsystem
+     * most likely to want a rich ABI vocabulary -- a viewer must tell the user
+     * 'wrong password' differently from 'this file is damaged'". It now has
+     * one, and it is the C++ reader's vocabulary verbatim: nine codes, no
+     * distinction finer than uapp::Status can actually make. */
+    UAPP_STATUS_PDF_MALFORMED            = 700, /* not a PDF, or damaged past recovery */
+    UAPP_STATUS_PDF_PASSWORD_REQUIRED    = 701, /* encrypted; absent or wrong password */
+    UAPP_STATUS_PDF_SECURITY_UNSUPPORTED = 702,
+    UAPP_STATUS_PDF_PAGE_NOT_FOUND       = 703, /* index outside [0, page_count) */
+    UAPP_STATUS_PDF_PAGE_LOAD_FAILED     = 704, /* index in range, page unusable */
+    UAPP_STATUS_PDF_RENDER_FAILED        = 705,
+    UAPP_STATUS_PDF_RENDER_SIZE_INVALID  = 706, /* non-positive/oversized/overflowing */
+    UAPP_STATUS_PDF_BUFFER_TOO_SMALL     = 707, /* the caller's pixel buffer is short */
+    UAPP_STATUS_PDF_NOT_OPEN             = 708,
 
     /* C ABI boundary only (9xx) -- no uapp::Status counterpart */
     UAPP_STATUS_OUT_OF_MEMORY = 900, /* a boundary allocation failed; nothing was changed */
@@ -302,6 +369,40 @@ UAPP_CAPI_API uapp_bool_t uapp_abi_is_compatible(uint32_t header_major, uint32_t
 
 #define UAPP_ABI_ASSERT_COMPATIBLE() \
     uapp_abi_is_compatible(UAPP_ABI_VERSION_MAJOR, UAPP_ABI_VERSION_MINOR)
+
+/* --- optional surfaces (cannot fail) -------------------------------------
+ *
+ * Is the uapp_pdf.h surface present in THIS library?
+ *
+ * Every other function in this ABI is unconditional. The PDF one is not,
+ * because pdf-engine/ is built only when a PDFium is vendored
+ * (UAPP_ENABLE_PDF in the root CMakeLists.txt: AUTO by default, so a fresh
+ * clone with no third_party/pdfium gets a library with no PDF in it). This
+ * function is compiled into the ALWAYS-BUILT translation unit, so it is a
+ * symbol you can call before you know the answer -- which is the entire
+ * point of it existing rather than being a macro.
+ *
+ * When it returns UAPP_FALSE, the uapp_pdf_* functions declared in
+ * uapp/capi/uapp_pdf.h ARE NOT IN THE LIBRARY. Calling one is a link error
+ * against a static archive and a missing-symbol abort against a shared one;
+ * no uapp_pdf_* function returns a "PDF is unavailable" status, because there
+ * is no function there to return it. A binding checks this once at load time,
+ * next to UAPP_ABI_ASSERT_COMPATIBLE(), and hides its PDF feature if it is
+ * false.
+ *
+ * NOT the same question as uapp_abi_is_compatible(): the version says what
+ * the SHAPE of the ABI is, this says whether one optional surface was built.
+ * See the 0.3 note in the VERSION HISTORY above for why the two are
+ * deliberately not folded together.
+ *
+ * NOT IMPLEMENTED: a generated <uapp/capi/uapp_capi_config.h> carrying the
+ * same answer as a preprocessor macro, so a binding could #if the PDF code
+ * out at compile time rather than branch at runtime. That needs an installed,
+ * configure-time-generated header, which this project does not have yet and
+ * which is a packaging decision (shared-library build, export set, install
+ * rules) rather than an ABI one.
+ */
+UAPP_CAPI_API uapp_bool_t uapp_pdf_is_available(void);
 
 /* --- status helpers (cannot fail) ---------------------------------------- */
 
