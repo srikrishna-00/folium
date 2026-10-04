@@ -98,6 +98,14 @@ option(UAPP_BUILD_TOOLS       "Build developer CLI / harness executables" ${uapp
 option(UAPP_ENABLE_SANITIZERS "Build with Address+UB sanitizers"         OFF)
 option(UAPP_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"       ON)
 
+# core/sync/spike — the Fugue CRDT correctness spike owed by ADR-0002. It is
+# RESEARCH CODE: it is never linked by a product target, and it follows
+# UAPP_BUILD_TESTS because its only consumer is tests/sync_spike. Spelled as
+# its own switch so that a release build can be verified to exclude it, and so
+# that turning it off is a one-flag answer to "is any of this shipping?".
+option(UAPP_BUILD_SYNC_SPIKE  "Build the standalone Fugue CRDT correctness spike (research only)"
+       ${UAPP_BUILD_TESTS})
+
 include(cmake/UappCompilerOptions.cmake)
 
 # --- Third-party -----------------------------------------------------------
@@ -177,6 +185,13 @@ endif()
 
 if(UAPP_BUILD_TOOLS)
     add_subdirectory(tools)
+endif()
+
+# The CRDT spike is added here rather than from core/CMakeLists.txt on purpose:
+# core/ is the portable domain layer, and an experiment that no product target
+# links is not part of it. See core/sync/spike/CMakeLists.txt.
+if(UAPP_BUILD_SYNC_SPIKE)
+    add_subdirectory(core/sync/spike)
 endif()
 
 if(UAPP_BUILD_TESTS)

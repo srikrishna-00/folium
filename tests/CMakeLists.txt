@@ -98,6 +98,54 @@ set_tests_properties(uapp.search.unit uapp.search.edits uapp.search.deletes
                      uapp.search.hostile PROPERTIES TIMEOUT 120)
 
 # ---------------------------------------------------------------------------
+# core/sync/spike — the Fugue CRDT correctness spike (ADR-0002, SP-6 R-1..R-3).
+#
+# A separate executable, and the MOST isolated one in the tree: it links only
+# uapp::sync_fugue_spike, which links nothing but uapp::compiler_options. It
+# cannot reach uapp::core_common, core/blocks, storage/sqlite or the C ABI, so
+# "the CRDT spike is standalone research code and is not wired into the
+# product" is checked by the link line rather than by review. If a source under
+# core/sync/spike ever includes a core header, this target fails to build.
+#
+# Conditional on UAPP_BUILD_SYNC_SPIKE for the same reason the PDF suite is
+# conditional on a vendored PDFium: with the spike off, `ctest` runs exactly
+# the suite it ran before the spike existed, and no placeholder reports
+# "skipped" for a module that was never compiled.
+#
+# Five CTest entries over one binary, split by name filter, because the five
+# failure modes mean five different things:
+#   .basic           — the algorithm does not even do single-replica editing
+#   .rga_control     — the DEFECTIVE control stopped reproducing the published
+#                      RGA anomaly, which would silently void the P4 result
+#   .noninterleaving — P4, the property the algorithm was chosen for
+#   .properties      — P1/P2/P3 plus the differential and specification oracles
+#   .buffer          — out-of-causal-order delivery and the bounded buffer
+#
+# The property cases are randomised; UAPP_FUGUE_TRIALS raises the trial count
+# for a soak run without a rebuild. The default is sized for the PR path.
+# ---------------------------------------------------------------------------
+if(TARGET uapp::sync_fugue_spike)
+    add_executable(uapp_sync_spike_tests
+        support/test_main.cpp
+        sync_spike/fugue_spike_test.cpp)
+
+    target_include_directories(uapp_sync_spike_tests PRIVATE support sync_spike)
+
+    target_link_libraries(uapp_sync_spike_tests
+        PRIVATE uapp::sync_fugue_spike uapp::compiler_options)
+
+    add_test(NAME uapp.sync_spike.basic           COMMAND uapp_sync_spike_tests "fugue.")
+    add_test(NAME uapp.sync_spike.rga_control     COMMAND uapp_sync_spike_tests "rga.control")
+    add_test(NAME uapp.sync_spike.noninterleaving COMMAND uapp_sync_spike_tests "noninterleaving.")
+    add_test(NAME uapp.sync_spike.properties      COMMAND uapp_sync_spike_tests "property.")
+    add_test(NAME uapp.sync_spike.buffer          COMMAND uapp_sync_spike_tests "property.noncausal")
+
+    set_tests_properties(uapp.sync_spike.basic uapp.sync_spike.rga_control
+                         uapp.sync_spike.noninterleaving uapp.sync_spike.properties
+                         uapp.sync_spike.buffer PROPERTIES TIMEOUT 600)
+endif()
+
+# ---------------------------------------------------------------------------
 # file-engine/detection — spec section 8/9 file-type detection.
 #
 # A third separate executable, and the most isolated of them: it links ONLY

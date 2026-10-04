@@ -431,13 +431,26 @@ sealed-bundle storage and fan-out, rotation orchestration)
 
 ## PHASE 13 — Synchronisation
 
-**Entry:** Phase 12 done; **re-scoped SP-6 passed** (reference model + Fugue prototype +
-differential harness); **the algorithm decision in `adr/0002` confirmed or amended**
+**Entry:** Phase 12 done; ~~re-scoped SP-6 passed~~ **re-scoped SP-6 tasks 1–3 PASSED
+2026-10-04** (`spikes/fugue-correctness-spike.md`: reference model + Fugue *and* FugueMax
+prototype + differential harness, four properties over 5.49 M generated operations, 5/5
+injected faults caught); **re-scoped SP-6 task 4 (encrypted framing sketch) and SP-6 R-4 (GC +
+causal-delivery specification) still OWED**; **the algorithm decision in `adr/0002` confirmed
+or amended** — the spike found the ADR's *wording* is wrong (it claims plain Fugue is
+*maximally* non-interleaving; that is FugueMax's property) so this entry item is **not yet
+satisfied** and needs a product-owner decision, not an implementation choice.
 **Effort:** 14–18 weeks → **16–20 weeks. 76 → 93 ew** (+8 E2EE framing, +9 custom CRDT).
-**This is now the most dangerous phase in the project**, ahead of 5 and 8: Low confidence,
-"Very High" correctness risk, a from-scratch CRDT with a known algorithm-level trap, and an
-encrypted transport that prevents server-side debugging of exactly the failures that are
-hardest to reproduce.
+**Unchanged by the spike.** Roughly 4 ew of the CRDT line item's risk-bearing work now exists,
+but as *spike* code against a `char` sequence; promoting it is a rewrite against the real
+document model, not a move. What the spike did buy is cheaper: the correctness obligation for
+the optimised implementation drops from "prove it is correct" to "prove it is byte-identical to
+a model we already have".
+**This is still the most dangerous phase in the project**, ahead of 5 and 8: Low confidence,
+"Very High" correctness risk, and an encrypted transport that prevents server-side debugging of
+exactly the failures that are hardest to reproduce. **What changed is which part is dangerous.**
+The algorithm-level trap is now demonstrated closed (**R-29 downgraded to L×5=5**) and the risk
+has moved to the optimisations, GC and framing that the spike did not touch (**new R-32,
+M×5=10**).
 
 **Deliverables**
 - Version vectors, Lamport clocks, device signing
@@ -460,6 +473,29 @@ hardest to reproduce.
       is enforced, it is this one.
 - [ ] **The optimised CRDT produces byte-identical documents to the naive reference model**
       across every generated interleaving
+- [ ] **The merged order is a linear extension of the strong list specification**, checked from
+      what each replica actually saw when it generated each insert — **not** inferred from the
+      reference model. `spikes/fugue-correctness-spike.md` §5 measured that the four properties
+      plus reference-model differential testing certify a wrong-parent fault as correct, because
+      both implementations faithfully reproduce the wrong parent recorded in the operation. The
+      reference model catches *integration* bugs; only this oracle catches *generation* bugs.
+      Both are required.
+- [ ] **A deliberately defective control algorithm (classic RGA) is in the test tree and is
+      asserted to FAIL the non-interleaving check.** It is the only thing that proves P4 can
+      still fail at all; if P4 goes quiet, this is the first test to look at.
+      (`core/sync/spike/rga.h` is written to be reused as-is.)
+- [ ] **Mutation testing of the merge code is part of CI, with a check that the rebuilt binary
+      actually changed.** 5/5 injected faults were caught in the spike; a stale-binary rebuild
+      silently reported a false result once and nearly got believed
+      (`spikes/fugue-correctness-spike.md` §6.4).
+- [ ] **Every walk of the CRDT tree is iterative or explicitly depth-bounded.** Measured: Fugue
+      tree depth equals document length *exactly* (16 000-deep tree for a 16 000-character
+      note), so the published algorithm's recursive traversal overflows the 512 KB default stack
+      of a secondary thread on iOS and Android at ordinary document sizes. This is a long note,
+      not an adversarial input.
+- [ ] Property generators include a **tombstone-heavy** profile. At an 18 % delete rate the
+      spike's suite needed ~1 000 trials to find a tombstone-related fault; at 45 % it needed
+      ~50.
 - [ ] **No plaintext reaches the server — as a test.** A full sync round-trip against a real
       server instance asserts that no known plaintext token appears in its database, object
       store, logs or metrics. Fails the build. Same weight as the Phase 14 egress test.

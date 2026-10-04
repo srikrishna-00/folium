@@ -71,6 +71,36 @@ idempotence/commutativity: **non-interleaving**, verified via reference-
 model differential testing against a known-correct sequence CRDT
 implementation, not just self-consistency checks.
 
+### Open items against this amendment (2026-10-04)
+
+The correctness spike this amendment's mitigation asks for has been run —
+`docs/spikes/fugue-correctness-spike.md`. It confirms the algorithm choice
+on evidence (R-29 downgraded M×5=10 → L×5=5) and raises **two corrections
+to the text above, both needing product-owner sign-off rather than silent
+editing, because this is a signed-off ADR:**
+
+1. **"Fugue provides maximal non-interleaving" is wrong.** Maximal
+   non-interleaving is **FugueMax's** property (Weidner & Kleppmann §5.3,
+   Definition 6). Plain Fugue is forward- and backward-non-interleaving but
+   not maximal; the spike reproduces the paper's own distinguishing
+   execution and gets Fugue `AYXBC` where FugueMax gets `AXYBC`. The paper
+   itself recommends plain Fugue in practice. **Resolve by either (a)
+   keeping plain Fugue and correcting this wording — recommended — or (b)
+   adopting FugueMax, which costs 8 more wire bytes per character, one extra
+   causal dependency, and a position index.** Leaving the wording as-is is
+   not an option: an overstated correctness claim is how this whole defect
+   class survived into the literature.
+2. **"verified via reference-model differential testing ... not just
+   self-consistency checks" is not sufficient on its own.** The spike
+   measured that reference-model differential testing *is* a
+   self-consistency check with respect to the operation set: it cannot see a
+   bug in operation *generation*, because both implementations faithfully
+   reproduce whatever parent the operation records. An injected wrong-parent
+   fault was certified correct by the differential oracle and caught only by
+   an independent **strong-list-specification** oracle. That oracle must be
+   named here and in `sync-architecture.md` §6.2 alongside the reference
+   model, not instead of it.
+
 ## Consequences
 
 - ai-architecture.md, sync-architecture.md, and security-model.md need

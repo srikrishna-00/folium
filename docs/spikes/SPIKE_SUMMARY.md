@@ -5,6 +5,16 @@
 **Scope:** the three blocking pre-Phase-1 spikes from `PHASE0_SUMMARY.md` §2 (S-4), plus the
 architecture-doc follow-up required by `adr/0002`'s three sign-off decisions.
 
+> **Follow-up, 2026-10-04:** SP-6's re-scoped tasks 1–3 have since been **executed with code** —
+> see **`fugue-correctness-spike.md`**. Fugue and FugueMax were implemented, a reference model
+> and differential harness built, and the four properties run over 5.49 M generated operations.
+> SP-6's §5 recommendations R-1 (build Fugue), R-2 (four properties with a dedicated
+> backward-insertion generator) and R-3 (naive reference model first) are discharged; **R-4
+> (tombstone GC + causal-delivery specification) and re-scoped task 4 (encrypted framing
+> sketch) are not.** The spike also found that R-3 as written is insufficient on its own — a
+> reference model cannot catch a bug in operation *generation* — which added a fifth oracle to
+> `sync-architecture.md` §6.2.
+
 ---
 
 ## 0. One-paragraph version

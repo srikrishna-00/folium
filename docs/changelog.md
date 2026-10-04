@@ -12,6 +12,56 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `core/sync/spike`: the Fugue CRDT correctness spike (ADR-0002, SP-6 R-1/R-2/R-3)
+
+**Research code, not a product module, and the build graph says so.** `uapp::sync_fugue_spike`
+links nothing but `uapp::compiler_options` — not `uapp::core_common`, not `storage/sqlite`, not
+`core/capi` — so "the CRDT experiment cannot reach the document model" is checked by the linker
+rather than by review, and `-DUAPP_BUILD_SYNC_SPIKE=OFF` removes it entirely (CTest drops from
+24 entries back to the pre-existing 19). It operates on a sequence of `char`, deliberately: this
+spike tests the *algorithm*, and integrating it into `core/blocks` before the algorithm was
+proven is the mistake it exists to avoid.
+
+Full findings, with numbers: **`docs/spikes/fugue-correctness-spike.md`**.
+
+- **Fugue and FugueMax, both implemented from the paper.** Algorithm 1 of Weidner & Kleppmann
+  (arXiv:2305.00583) line for line, with the paper's line numbers quoted at each step, plus
+  Definition 6's FugueMax right-sibling rule. Both, because `adr/0002` claims "maximal
+  non-interleaving" and that property belongs to FugueMax, not to Fugue.
+- **Three independent oracles, not one.** A reference model that computes the same order by a
+  structurally different route (whole operation set, precomputed root paths, O(n²) pairwise
+  comparator, brute-force ranks that also *prove the comparator is a total order*); a
+  strong-list-specification oracle derived from what each replica actually saw, which is
+  independent of Fugue altogether; and a maximal-run detector for non-interleaving.
+- **Classic RGA, implemented on purpose as a defective control,** calibrated against the Fugue
+  paper's Appendix A.1.8 (which states the expected `axb` outcome). The suite asserts the
+  detector **fires** on RGA, which is what turns P4 from a claim into a measurement.
+- **Results.** 25 cases, 25 pass. Soak: **5 487 225 generated operations / ~27 M applications**
+  across six randomised generators, clean; ASan+UBSan clean over 731 881 operations; 9.7 s on
+  the PR path, 115 s for the soak, one binary, `UAPP_FUGUE_TRIALS` picks which. P4 concretely:
+  the backward shopping-list shape merges to `SXaYbZc` under RGA (3 runs per token, every
+  replica agreeing) and to `SabcXYZ` under Fugue (1 run per token).
+- **Mutation-tested, because 25/25 on the first run is a reason for suspicion, not confidence.**
+  Five faults injected one at a time into `fugue.cpp`, each rebuilt with the output binary's
+  hash verified to have changed. All five are now caught; **one initially was not**, and that
+  gap — the reference model is structurally blind to a bug in operation *generation*, and the
+  generator under-produced tombstones — is the most useful thing in the findings doc. It
+  produced a new required oracle (P5) in `sync-architecture.md` §6.2, two tombstone-heavy
+  generators, and a raised default trial count.
+- **Known gaps, stated rather than implied.** No tombstone GC, no run-length/waypoint
+  compression, no persistence, no encryption, no transport — all Phase 13 production work with
+  their own design obligations. The naive local insert is O(n) per operation, i.e. O(n²) for
+  sequential typing (1.17 s for 16 000 appends), which is the cost the paper's own optimised
+  implementation removes with waypoints.
+
+**Consequences recorded elsewhere:** `risk-register.md` **R-29 downgraded M×5=10 → L×5=5** and
+re-scoped to the algorithm choice, with **new R-32 (M×5=10)** for the untested optimised/GC'd
+implementation the probability moved to; `roadmap.md` Phase 13 entry and exit criteria updated
+(effort unchanged at 93 ew); `sync-architecture.md` §6.1/§6.2 and `adr/0002` annotated with two
+corrections the spike found in *their own text*, flagged for product-owner sign-off rather than
+edited silently. **Still owed and not touched here:** the encrypted framing sketch (re-scoped
+SP-6 task 4) and the tombstone-GC / causal-stability specification (SP-6 R-4).
+
 ### Added — `core/capi`: file detection and PDF viewing C ABI (ABI **0.3**, spec §8/§9/§11, §30)
 
 Closes the last mobile-bridge gap the 0.2 entry below left open in its own NOT IMPLEMENTED

@@ -215,7 +215,23 @@ and that limit should be stated honestly rather than marketed away.
 Everything the ADR wanted is preserved — custom, C++, no Rust — and the change costs roughly
 +1 ew. **This is a change to a signed-off ADR and needs product-owner confirmation.**
 
-### 6.2 Correctness-testing plan — four properties, not three
+> **Correction owed (2026-10-04, `spikes/fugue-correctness-spike.md` §4.3).** The paragraph
+> above attributes *maximal* non-interleaving to Fugue. It is **FugueMax's** property (paper
+> §5.3, Definition 6). Plain Fugue is forward- and backward-non-interleaving — Table 1 of the
+> paper marks it proven on all three interleaving columns — but it is not *maximal*, and the
+> spike reproduces the paper's own distinguishing execution (its Figure 7) to show it: Fugue
+> returns `AYXBC` where FugueMax returns `AXYBC`, the latter being the unique order maximal
+> non-interleaving permits. The paper proves that wherever the two differ, some interleaving is
+> unavoidable for *any* algorithm, and recommends plain Fugue in practice. **The prototype
+> implements both.** Which one ships is a product-owner decision (see the Open items in
+> `adr/0002`); the wording here must change either way.
+>
+> Measured cost of FugueMax over Fugue: the right origin must travel on the wire with every
+> right child (8 more bytes **per character**), it becomes an extra causal dependency that
+> widens the out-of-order buffering window, and sibling ordering needs the *list positions* of
+> two right origins — an O(n) traversal per delivered right child without a position index.
+
+### 6.2 Correctness-testing plan — four properties, not three (and a fifth check, added 2026-10-04)
 
 For **any** random interleaving of operations across N simulated replicas:
 
@@ -242,6 +258,36 @@ Supporting obligations, from SP-6 F-4 — these are where hand-written CRDTs act
   (An Isabelle/HOL development with a machine-checked SEC proof for RGA already exists —
   Gomes, Kleppmann et al., OOPSLA 2017 — so the algorithm-level argument is not original
   research. Our optimisations are.)
+
+  > **Not sufficient on its own (2026-10-04, `spikes/fugue-correctness-spike.md` §5).**
+  > A reference model reads the parent and side recorded **in each operation**, so it catches
+  > *integration* bugs and is structurally blind to *generation* bugs. The spike injected a
+  > fault that picks the wrong parent — the right origin taken from the visible successor
+  > instead of the tombstone-inclusive one, i.e. Algorithm 1 line 24 — and the differential
+  > oracle certified the result as correct, because both implementations faithfully reproduced
+  > the wrong parent. **P5 below is therefore mandatory, not optional.**
+
+- **P5 — the strong list specification, checked from the history and not from the algorithm.**
+  Record, for every insert, the element ids the generating replica could actually see and the
+  index it inserted at. The merged order must then be a linear extension of those constraints:
+  everything then before the position precedes the new element, everything then from the
+  position onwards follows it (Attiya et al., condition (b)). Its first check — that the
+  inserted element is present in the merged order at all — is also the **no-loss** property.
+  In the spike this was **the only oracle that caught the wrong-parent fault above.**
+- **P4 and P5 need a defective control.** "Assert our CRDT does not interleave" passes just as
+  happily when the detector is broken, when the scenario does not trigger the defect, or when
+  the merge never happened. Keep classic RGA in the test tree and **assert that it FAILS** the
+  non-interleaving check — the spike's control merges the backward shopping-list shape to
+  `SXaYbZc`, which is both convergent and corrupt. If P4 ever goes quiet, the control is the
+  first thing to check.
+- **Generators must include a tombstone-heavy profile.** Measured: at an 18 % delete rate the
+  spike's suite needed ~1 000 trials to find the wrong-parent fault; at 45 % it needed ~50.
+- **Every walk of the CRDT tree must be iterative or explicitly depth-bounded.** Measured: a
+  Fugue tree's depth equals the document length *exactly* — sequentially typed text is a spine,
+  so a 16 000-character note is a 16 000-deep tree. The published algorithm's recursive
+  traversal (its lines 14-20) therefore overflows the 512 KB default stack of a secondary
+  thread on iOS and Android at ordinary document sizes. This is a long note, not an adversarial
+  input, and it is not covered by any bullet above.
 - **Causal delivery.** An insert may arrive before the operation defining its origin. The
   implementation **buffers**; it never assumes. The buffer is **bounded**, and overflow
   escalates visibly rather than pinning memory (a hostile or buggy device otherwise has a
