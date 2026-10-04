@@ -57,49 +57,56 @@ this decision's mitigation is structurally blind to this failure mode,
 since all three properties hold on the corrupted result.
 
 **Amended decision: implement Fugue (Weidner & Kleppmann, 2023)
-instead.** Fugue provides maximal non-interleaving and its correctness
-argument is largely inheritable from existing RGA-family proofs (an
-Isabelle/HOL strong-eventual-consistency proof exists for RGA; only
-Fugue's positioning optimizations are novel and need their own
-verification). Estimated cost: ~+1 engineer-week over the original RGA
-estimate, revised further upward by SP-6's broader complexity findings
-(see engineering-complexity-estimate.md: CRDT line item 6-8 -> 15-17
+instead.** Fugue provides non-interleaving (both forward and backward —
+it does not have RGA's defect class) and its correctness argument is
+largely inheritable from existing RGA-family proofs (an Isabelle/HOL
+strong-eventual-consistency proof exists for RGA; only Fugue's
+positioning optimizations are novel and need their own verification).
+Estimated cost: ~+1 engineer-week over the original RGA estimate,
+revised further upward by SP-6's broader complexity findings (see
+engineering-complexity-estimate.md: CRDT line item 6-8 -> 15-17
 engineer-weeks).
 
-Phase 13's test plan must add a fourth property beyond convergence/
-idempotence/commutativity: **non-interleaving**, verified via reference-
-model differential testing against a known-correct sequence CRDT
-implementation, not just self-consistency checks.
+Phase 13's test plan must add a fifth check beyond convergence/
+idempotence/commutativity: **non-interleaving**, verified via (a)
+reference-model differential testing against a known-correct sequence
+CRDT implementation, AND (b) an independent strong-list-specification
+oracle derived from the operation history. Neither alone is sufficient
+— see the 2026-10-04 resolution below for why both are required.
 
-### Open items against this amendment (2026-10-04)
+### Resolution (2026-10-04): plain Fugue confirmed, wording corrected
 
-The correctness spike this amendment's mitigation asks for has been run —
-`docs/spikes/fugue-correctness-spike.md`. It confirms the algorithm choice
-on evidence (R-29 downgraded M×5=10 → L×5=5) and raises **two corrections
-to the text above, both needing product-owner sign-off rather than silent
-editing, because this is a signed-off ADR:**
+The correctness spike this amendment's mitigation asked for has been
+run — `docs/spikes/fugue-correctness-spike.md`. It confirms the
+algorithm choice on evidence (R-29 downgraded M×5=10 -> L×5=5) and
+surfaced two inaccuracies in the original amendment text above, both
+now corrected in place rather than left standing:
 
-1. **"Fugue provides maximal non-interleaving" is wrong.** Maximal
-   non-interleaving is **FugueMax's** property (Weidner & Kleppmann §5.3,
-   Definition 6). Plain Fugue is forward- and backward-non-interleaving but
-   not maximal; the spike reproduces the paper's own distinguishing
-   execution and gets Fugue `AYXBC` where FugueMax gets `AXYBC`. The paper
-   itself recommends plain Fugue in practice. **Resolve by either (a)
-   keeping plain Fugue and correcting this wording — recommended — or (b)
-   adopting FugueMax, which costs 8 more wire bytes per character, one extra
-   causal dependency, and a position index.** Leaving the wording as-is is
-   not an option: an overstated correctness claim is how this whole defect
-   class survived into the literature.
-2. **"verified via reference-model differential testing ... not just
-   self-consistency checks" is not sufficient on its own.** The spike
-   measured that reference-model differential testing *is* a
-   self-consistency check with respect to the operation set: it cannot see a
-   bug in operation *generation*, because both implementations faithfully
-   reproduce whatever parent the operation records. An injected wrong-parent
-   fault was certified correct by the differential oracle and caught only by
-   an independent **strong-list-specification** oracle. That oracle must be
-   named here and in `sync-architecture.md` §6.2 alongside the reference
-   model, not instead of it.
+1. **"Fugue provides maximal non-interleaving" was wrong.** Maximal
+   non-interleaving is **FugueMax's** property (Weidner & Kleppmann
+   §5.3, Definition 6), not plain Fugue's — the spike reproduced the
+   paper's own distinguishing execution and got Fugue `AYXBC` where
+   FugueMax gets `AXYBC`. **Decision (product-owner sign-off
+   2026-10-04): keep plain Fugue, as the paper itself recommends for
+   practical use.** FugueMax's extra guarantee was judged not worth
+   its cost (8 more wire bytes per character, one extra causal
+   dependency, a position index) for a distinction the spike's own
+   measurements show is rare in practice (0 interleaving events in
+   4,000 randomized ordered-typing trials; see the spike's §4.4). The
+   wording above is corrected accordingly — this is the authoritative
+   statement of what Phase 13 implements.
+2. **"verified via reference-model differential testing... not just
+   self-consistency checks" was insufficient on its own.** The spike
+   measured that reference-model differential testing *is itself* a
+   self-consistency check with respect to the operation set: it cannot
+   see a bug in operation *generation*, because both the reference
+   model and the implementation faithfully replay whatever parent the
+   operation records. An injected wrong-parent fault was certified
+   correct by the differential oracle alone and caught only by an
+   independent **strong-list-specification** oracle. The test-plan
+   paragraph above is corrected to require both; `sync-architecture.md`
+   §6.2 names the specification oracle alongside the reference model
+   for the same reason.
 
 ## Consequences
 

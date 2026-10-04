@@ -193,7 +193,7 @@ Consequences of the decision, recorded so they are not rediscovered:
 - Risk R-15 (Rust build friction) is closed by decision and replaced by **R-29: a merge
   defect that converges** — see §6.1.
 
-### 6.1 Algorithm: Fugue, not classic RGA — **needs confirmation**
+### 6.1 Algorithm: Fugue, not classic RGA — **confirmed 2026-10-04**
 
 Spike SP-6 (`spikes/SP-6-findings.md`) found a specification-level defect in RGA that the
 ADR's stated mitigation cannot detect.
@@ -204,32 +204,28 @@ one builds text right-to-left, get a result interleaved character by character. 
 converges — on the same garbage. A convergence test passes. An idempotence test passes. A
 commutativity test passes. The user sees `HWeolrllod`.
 
-**Fugue** (Weidner, Kleppmann et al., 2023) defines *maximal non-interleaving* as a
-correctness property for replicated lists and achieves it by disambiguating concurrent
+**Fugue** (Weidner, Kleppmann et al., 2023) defines *non-interleaving* as a correctness
+property for replicated lists and achieves it (forward and backward — Table 1 of the paper
+marks plain Fugue proven on all three interleaving columns) by disambiguating concurrent
 inserts on **`leftOrigin` first, then `rightOrigin`** — exactly the hole RGA leaves open. It
-is comparable in implementation complexity to RGA. The same work proves that avoiding
-interleaving in *every* situation is impossible, so the target is maximal non-interleaving,
-and that limit should be stated honestly rather than marketed away.
+is comparable in implementation complexity to RGA. A stronger property, *maximal*
+non-interleaving, belongs to a variant called **FugueMax** (paper §5.3, Definition 6); the
+paper proves that wherever the two differ, some interleaving is unavoidable for *any*
+algorithm, and recommends plain Fugue for practical use despite the gap.
 
-**Recommendation: amend `adr/0002` decision 2 from "RGA" to "a Fugue-family sequence CRDT".**
-Everything the ADR wanted is preserved — custom, C++, no Rust — and the change costs roughly
-+1 ew. **This is a change to a signed-off ADR and needs product-owner confirmation.**
+**Decision (confirmed 2026-10-04, see `adr/0002`'s Resolution section): implement plain
+Fugue, not FugueMax.** `spikes/fugue-correctness-spike.md` implemented and tested both;
+plain Fugue was chosen on the paper's own practical recommendation and because the spike's
+measurements show the distinguishing case is rare (0 interleaving events across 4,000
+randomized ordered-typing trials, spike §4.4). FugueMax's extra guarantee was judged not
+worth its measured cost: the right origin must travel on the wire with every right child (8
+more bytes **per character**), it becomes an extra causal dependency that widens the
+out-of-order buffering window, and sibling ordering needs the *list positions* of two right
+origins — an O(n) traversal per delivered right child without a position index.
 
-> **Correction owed (2026-10-04, `spikes/fugue-correctness-spike.md` §4.3).** The paragraph
-> above attributes *maximal* non-interleaving to Fugue. It is **FugueMax's** property (paper
-> §5.3, Definition 6). Plain Fugue is forward- and backward-non-interleaving — Table 1 of the
-> paper marks it proven on all three interleaving columns — but it is not *maximal*, and the
-> spike reproduces the paper's own distinguishing execution (its Figure 7) to show it: Fugue
-> returns `AYXBC` where FugueMax returns `AXYBC`, the latter being the unique order maximal
-> non-interleaving permits. The paper proves that wherever the two differ, some interleaving is
-> unavoidable for *any* algorithm, and recommends plain Fugue in practice. **The prototype
-> implements both.** Which one ships is a product-owner decision (see the Open items in
-> `adr/0002`); the wording here must change either way.
->
-> Measured cost of FugueMax over Fugue: the right origin must travel on the wire with every
-> right child (8 more bytes **per character**), it becomes an extra causal dependency that
-> widens the out-of-order buffering window, and sibling ordering needs the *list positions* of
-> two right origins — an O(n) traversal per delivered right child without a position index.
+This amends `adr/0002` decision 2 from "RGA" to "Fugue" (not "a Fugue-family sequence CRDT" —
+the family member is now pinned). Everything the ADR wanted is preserved — custom, C++, no
+Rust — at the ADR's original estimated cost of roughly +1 ew over RGA.
 
 ### 6.2 Correctness-testing plan — four properties, not three (and a fifth check, added 2026-10-04)
 
