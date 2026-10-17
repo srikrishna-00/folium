@@ -22,6 +22,7 @@
 #include "uapp/blocks/page.h"
 #include "uapp/object_id.h"
 #include "uapp/search/search_result.h"
+#include "document_sql.h"
 #include "search_index_sql.h"
 #include "sqlite_raii.h"
 
@@ -38,32 +39,22 @@ using blocks::PageId;
 // ---------------------------------------------------------------------------
 // Schema
 //
-// Mirrors database-design.md section 3.3 (`document` + `block`) minus what
-// this run does not have: workspaces, child pages, soft deletes, sync columns,
-// CRDT state. Two deliberate, documented deviations from that document:
+// THE DDL ITSELF MOVED to document_sql.h once a SECOND adapter
+// (sqlite_database_store.cpp) came to need the `page` table it creates. That
+// header carries the full rationale for the shape -- the two documented
+// deviations from database-design.md section 3.3 (integer `sort_index`
+// instead of a fractional `sort_key`; typed content columns instead of a CBOR
+// blob), the absent `page.kind` column, the absent `block.text_cache` column,
+// and why there is no UNIQUE constraint on the sibling ordering. Nothing
+// about the shape changed in the move, and the move is for one reason: two
+// copies of `CREATE TABLE IF NOT EXISTS page` differing by one CHECK means
+// whichever adapter opens the file first silently wins.
 //
-// 1. ORDERING IS AN INTEGER `sort_index`, NOT A FRACTIONAL `sort_key`.
-//    The design doc argues -- correctly -- that integer positions turn a
-//    1-block insert into an N-row renumber, which is catastrophic for sync
-//    because it becomes an N-block conflict. That cost is *only* paid once
-//    sync exists (Phase 13). Today there is exactly one writer on one device,
-//    an insert renumbers at most the tail of one sibling list inside the same
-//    transaction, and dense 0..n-1 positions make every ordering assertion in
-//    the test suite exact rather than "compare two opaque strings".
-//    Fractional indexing is therefore deferred, NOT rejected: the migration
-//    is `ALTER TABLE block ADD COLUMN sort_key TEXT` plus a one-pass backfill
-//    in sort_index order, with no change to the block identifiers.
-//
-// 2. CONTENT IS IN TYPED COLUMNS, NOT A CBOR BLOB.
-//    The doc chooses CBOR because nineteen block types with disjoint fields
-//    would otherwise mean nineteen tables or a sixty-column sparse table.
-//    With the eight types implemented here the whole payload space is four
-//    columns (text, checked, heading_level, language), and four real columns
-//    beat a hand-rolled codec that would need its own fuzz target before it
-//    could be trusted with a file off the network. `schema_ver` is present
-//    from day one so the switch to CBOR -- which becomes right as soon as a
-//    type like `table` or `image` lands -- is a versioned migration rather
-//    than a rewrite. core/blocks/block.h documents that trigger point.
+// THIS FILE STILL OWNS THOSE TABLES. It is the only translation unit that
+// writes to them, and everything about HOW -- the encode/decode pair, the
+// tree assembly, the sibling arithmetic, the schema-version bookkeeping --
+// stays here. Density of `sort_index` within a sibling group is an invariant
+// this file maintains and the tests assert.
 //
 // FULL-TEXT INDEXING (was NOT IMPLEMENTED; now is)
 // ---------------------------------------------------------------------------
@@ -76,49 +67,7 @@ using blocks::PageId;
 // TITLE, which lives in no block. The reasoning for block-level over
 // page-level is argued in search_index_sql.h, "DESIGN DECISION 2".
 //
-// There is deliberately still no `text_cache` COLUMN on `block`: the text is
-// already in `block.text`, and a denormalised copy would be derived data the
-// store has to keep consistent with its own source for no reader that needs
-// it. database-design.md section 11 lists exactly that drift
-// ("`text_cache` drifts from `content`") as a known integrity hazard.
 // ---------------------------------------------------------------------------
-constexpr char kSchemaSql[] =
-    "CREATE TABLE IF NOT EXISTS schema_meta ("
-    "  key   TEXT PRIMARY KEY,"
-    "  value INTEGER NOT NULL"
-    ");"
-    "CREATE TABLE IF NOT EXISTS page ("
-    "  id             BLOB    NOT NULL PRIMARY KEY CHECK(length(id) = 16),"
-    "  title          TEXT    NOT NULL,"
-    "  created_at_ms  INTEGER NOT NULL CHECK(created_at_ms  >= 0),"
-    "  modified_at_ms INTEGER NOT NULL CHECK(modified_at_ms >= 0)"
-    ");"
-    "CREATE TABLE IF NOT EXISTS block ("
-    "  id             BLOB    NOT NULL PRIMARY KEY CHECK(length(id) = 16),"
-    "  page_id        BLOB    NOT NULL REFERENCES page(id) ON DELETE CASCADE,"
-    "  parent_id      BLOB    REFERENCES block(id) ON DELETE CASCADE"
-    "                         CHECK(parent_id IS NULL OR length(parent_id) = 16),"
-    "  type           INTEGER NOT NULL CHECK(type >= 0),"
-    "  sort_index     INTEGER NOT NULL CHECK(sort_index >= 0),"
-    "  schema_ver     INTEGER NOT NULL DEFAULT 1,"
-    "  text           TEXT    NOT NULL DEFAULT '',"
-    "  checked        INTEGER NOT NULL DEFAULT 0 CHECK(checked IN (0, 1)),"
-    "  heading_level  INTEGER NOT NULL DEFAULT 0 CHECK(heading_level BETWEEN 0 AND 3),"
-    "  language       TEXT    NOT NULL DEFAULT '',"
-    "  created_at_ms  INTEGER NOT NULL CHECK(created_at_ms  >= 0),"
-    "  modified_at_ms INTEGER NOT NULL CHECK(modified_at_ms >= 0),"
-    "  CHECK(parent_id IS NULL OR parent_id <> id)"
-    ");"
-    "CREATE INDEX IF NOT EXISTS ix_block_page_parent "
-    "  ON block(page_id, parent_id, sort_index);"
-    "CREATE INDEX IF NOT EXISTS ix_block_parent ON block(parent_id);";
-
-// There is deliberately NO UNIQUE(page_id, parent_id, sort_index) constraint.
-// Opening a gap is `UPDATE ... SET sort_index = sort_index + 1 WHERE ...`,
-// and SQLite applies that row by row: with a unique index the very first row
-// it touches would collide with its neighbour and the statement would fail
-// even though the end state is perfectly dense. Density is instead an
-// invariant this file maintains and the tests assert.
 
 /// Upper bound for the recursive-CTE probes. Legitimate trees never reach it
 /// because depth is enforced on every write, so hitting it means the file is
@@ -1265,7 +1214,7 @@ Status exec_batch(sqlite3* db, const char* sql, Status failure) noexcept {
 }
 
 Status apply_schema(sqlite3* db) noexcept {
-    if (const Status s = exec_batch(db, kSchemaSql, Status::StoreSchemaFailed); !is_ok(s)) {
+    if (const Status s = exec_batch(db, document_sql::kSchemaSql, Status::StoreSchemaFailed); !is_ok(s)) {
         return s;
     }
 

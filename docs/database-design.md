@@ -188,6 +188,22 @@ is that you cannot query inside `content` in SQL — which is why `text_cache` i
 
 ### 3.4 `database_records` namespace (user-defined databases)
 
+> **Deviation from the sketch below, recorded 2026-10-17: see
+> `docs/adr/0004-database-anchored-to-page.md`.** This section's `db_schema.document_id
+> PRIMARY KEY REFERENCES document(id)` keys a database directly off a document row — shape (A)
+> in that ADR, "a Database IS a Page." The implementation instead anchors a database to a host
+> page via a foreign key, as its own entity with its own `DatabaseId` (`db_collection.page_id
+> REFERENCES page(id)`, not `db_collection.id REFERENCES page(id)` as a shared primary key).
+> The reason is concrete, not stylistic: by the time this feature was built, `blocks::Page` was
+> a real, narrow type (title + validated block tree) with four real readers — `BlockStore`,
+> `DocumentService`, the Markdown converter, and the already-frozen C ABI — none of which could
+> safely be taught "some pages are not documents" without a `page.kind` column and a schema
+> migration touching a published ABI. The ADR records this as **deferred, not rejected**: once
+> child pages and `page.kind` exist, a "full-page database" becomes exactly what this section
+> originally specified. Table and column names below (`db_schema`, `document_id`) are therefore
+> illustrative of the ORIGINAL sketch; the real tables are `db_collection`, `db_property`,
+> `db_row`, `db_value`, `db_view` (see `storage/sqlite/src/sqlite_database_store.cpp`).
+
 ```sql
 CREATE TABLE db_schema (
   document_id   BLOB PRIMARY KEY REFERENCES document(id) ON DELETE CASCADE

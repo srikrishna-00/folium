@@ -211,6 +211,50 @@ uapp_status_t to_c_status(Status s) noexcept {
         case Status::ConversionInputMalformed:
         case Status::ConversionOutputTooLarge:
             return UAPP_STATUS_UNEXPECTED;
+
+        // ===================================================================
+        // core/database (spec section 15): NOT MINTED — the same test, for a
+        // fifth time.
+        // ===================================================================
+        // The test the 5xx entry states and the 0.3 entry completes is TWO
+        // questions, not one: did the core grow a code, and can a C caller
+        // reach it. The core grew sixteen; a C caller can reach none, because
+        // core/database has NO ABI header — the property-typed database
+        // landed the way blocks, search, file-engine, pdf-engine and
+        // conversion each did: module first, frozen boundary after.
+        //
+        // So all sixteen are listed (the switch has no `default:`, so
+        // -Wswitch under -Werror is what forces whoever adds a Status code to
+        // come here and make a decision) and flattened to
+        // UAPP_STATUS_UNEXPECTED, with no UAPP_STATUS_DATABASE_* constant
+        // minted. The flattening is unobservable today; when a
+        // uapp_database.h exists these become real constants in a 9xx block
+        // mirroring uapp::Status numerically, exactly as the 5xx and 6xx/7xx
+        // groups did, and that is an additive MINOR bump.
+        //
+        // Worth stating explicitly because sixteen is a lot to flatten at
+        // once: the alternative is NOT "mint the eight that look important".
+        // Minting a subset would give the boundary a vocabulary for some
+        // validation failures of a surface it does not expose and not others,
+        // and the choice of subset would be a guess frozen into a stable
+        // interface — the exact failure mode this precedent exists to avoid.
+        case Status::DatabasePropertyLimitExceeded:
+        case Status::DatabaseRowLimitExceeded:
+        case Status::DatabaseOptionLimitExceeded:
+        case Status::DatabaseViewLimitExceeded:
+        case Status::DatabaseViewSpecTooComplex:
+        case Status::DatabaseNameTooLong:
+        case Status::DatabaseValueTooLarge:
+        case Status::DatabaseValueMalformed:
+        case Status::DatabaseValueTypeMismatch:
+        case Status::DatabaseOptionNotInSchema:
+        case Status::DatabasePropertyNotInSchema:
+        case Status::DatabasePropertyDuplicated:
+        case Status::DatabasePropertyTypeUnsupported:
+        case Status::DatabaseViewKindUnsupported:
+        case Status::DatabaseFilterOperatorUnsupported:
+        case Status::DatabaseSchemaMalformed:
+            return UAPP_STATUS_UNEXPECTED;
     }
     // A code the core added and this layer has not been taught. We must not
     // guess a meaning for it; say so honestly instead.

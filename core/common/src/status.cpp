@@ -49,6 +49,39 @@ const char* status_code(Status s) noexcept {
         case Status::ConversionInputTooLarge:  return "CONVERSION_INPUT_TOO_LARGE";
         case Status::ConversionInputMalformed: return "CONVERSION_INPUT_MALFORMED";
         case Status::ConversionOutputTooLarge: return "CONVERSION_OUTPUT_TOO_LARGE";
+
+        case Status::DatabasePropertyLimitExceeded:
+            return "DATABASE_PROPERTY_LIMIT_EXCEEDED";
+        case Status::DatabaseRowLimitExceeded:
+            return "DATABASE_ROW_LIMIT_EXCEEDED";
+        case Status::DatabaseOptionLimitExceeded:
+            return "DATABASE_OPTION_LIMIT_EXCEEDED";
+        case Status::DatabaseViewLimitExceeded:
+            return "DATABASE_VIEW_LIMIT_EXCEEDED";
+        case Status::DatabaseViewSpecTooComplex:
+            return "DATABASE_VIEW_SPEC_TOO_COMPLEX";
+        case Status::DatabaseNameTooLong:
+            return "DATABASE_NAME_TOO_LONG";
+        case Status::DatabaseValueTooLarge:
+            return "DATABASE_VALUE_TOO_LARGE";
+        case Status::DatabaseValueMalformed:
+            return "DATABASE_VALUE_MALFORMED";
+        case Status::DatabaseValueTypeMismatch:
+            return "DATABASE_VALUE_TYPE_MISMATCH";
+        case Status::DatabaseOptionNotInSchema:
+            return "DATABASE_OPTION_NOT_IN_SCHEMA";
+        case Status::DatabasePropertyNotInSchema:
+            return "DATABASE_PROPERTY_NOT_IN_SCHEMA";
+        case Status::DatabasePropertyDuplicated:
+            return "DATABASE_PROPERTY_DUPLICATED";
+        case Status::DatabasePropertyTypeUnsupported:
+            return "DATABASE_PROPERTY_TYPE_UNSUPPORTED";
+        case Status::DatabaseViewKindUnsupported:
+            return "DATABASE_VIEW_KIND_UNSUPPORTED";
+        case Status::DatabaseFilterOperatorUnsupported:
+            return "DATABASE_FILTER_OPERATOR_UNSUPPORTED";
+        case Status::DatabaseSchemaMalformed:
+            return "DATABASE_SCHEMA_MALFORMED";
     }
     // Reached only if a caller casts a bogus integer into Status. We do not
     // trust that it cannot happen just because the enum is closed.
@@ -142,6 +175,39 @@ const char* status_message(Status s) noexcept {
         case Status::ConversionOutputTooLarge:
             return "Converting this document would produce output past the conversion "
                    "size limit.";
+
+        case Status::DatabasePropertyLimitExceeded:
+            return "The database already defines the maximum allowed number of properties.";
+        case Status::DatabaseRowLimitExceeded:
+            return "The database already holds the maximum allowed number of rows.";
+        case Status::DatabaseOptionLimitExceeded:
+            return "The property's option set exceeds the maximum allowed number of options.";
+        case Status::DatabaseViewLimitExceeded:
+            return "The database already holds the maximum allowed number of saved views.";
+        case Status::DatabaseViewSpecTooComplex:
+            return "The view references more filters or sort keys than are allowed.";
+        case Status::DatabaseNameTooLong:
+            return "A database, property, option or view name exceeds its maximum length.";
+        case Status::DatabaseValueTooLarge:
+            return "A text property value exceeds the maximum allowed size.";
+        case Status::DatabaseValueMalformed:
+            return "A property value violates the rules of its own property type.";
+        case Status::DatabaseValueTypeMismatch:
+            return "A property value's type does not match the type its property declares.";
+        case Status::DatabaseOptionNotInSchema:
+            return "The selected option is not one the property defines.";
+        case Status::DatabasePropertyNotInSchema:
+            return "The referenced property is not one the database defines.";
+        case Status::DatabasePropertyDuplicated:
+            return "A property or option identifier or name appears twice in one schema.";
+        case Status::DatabasePropertyTypeUnsupported:
+            return "That property type is recognised but not implemented in this build.";
+        case Status::DatabaseViewKindUnsupported:
+            return "That view kind is recognised but not implemented in this build.";
+        case Status::DatabaseFilterOperatorUnsupported:
+            return "That filter operator is not applicable to that property type.";
+        case Status::DatabaseSchemaMalformed:
+            return "The database schema is structurally invalid.";
     }
     return "Unrecognised status code.";
 }

@@ -148,6 +148,63 @@ set_tests_properties(uapp.conversion.escape uapp.conversion.syntax
                      uapp.conversion.bounds PROPERTIES TIMEOUT 300)
 
 # ---------------------------------------------------------------------------
+# core/database + storage/sqlite — the property-typed database system
+# (spec section 15).
+#
+# A separate executable, and it links uapp::storage_sqlite (which brings
+# uapp::core_database with it PUBLIC-ly) for the same reason uapp_blocks_tests
+# does: the suite has to drive BOTH the pure domain layer and the real
+# adapter, because the most valuable cases here are DIFFERENTIAL -- they run
+# database::evaluate_table_view and the adapter's compiled SQL over the same
+# rows and require the identical sequence. One process, one database file.
+#
+# It never names uapp::core_notes, so "the database system is built on the
+# block model that supersedes the flat note" (ADR-0003) stays a property of
+# the build graph. storage/sqlite does still drag core_notes in transitively;
+# that is the adapter target's business, not core/database's.
+#
+# Every case needs a REAL FILE rather than ":memory:", unlike the blocks
+# suite. A database is anchored to a `page` row (ADR-0004) and the `page`
+# table is owned by the BLOCK store, so the host page is created through a
+# block store on the same file -- and two ":memory:" opens are two PRIVATE
+# databases, in which the page would be invisible. The scratch files live in a
+# TempDir that removes itself.
+#
+# Five CTest entries over one binary, split by name filter, because the five
+# failure modes mean five different things:
+#   .property     — the typed property system or its schema validation broke,
+#                   which invalidates every case above it
+#   .view         — the MEANING of a Table view changed (operator legality,
+#                   filter semantics, sort keys, absent-value ordering)
+#   .store        — persistence, the schema round-trip or saved views broke
+#   .differential — the compiled SQL and the reference evaluator DISAGREE,
+#                   i.e. a view returns a different answer depending on which
+#                   code path answered it. This is the one that cannot be
+#                   found by reading either implementation alone.
+#   .bounds       — untrusted input got past a limit
+# ---------------------------------------------------------------------------
+add_executable(uapp_database_tests
+    support/test_main.cpp
+    database/property_test.cpp
+    database/view_test.cpp
+    database/database_store_test.cpp)
+
+target_include_directories(uapp_database_tests PRIVATE support database)
+
+target_link_libraries(uapp_database_tests
+    PRIVATE uapp::storage_sqlite uapp::compiler_options)
+
+add_test(NAME uapp.database.property     COMMAND uapp_database_tests "database.property")
+add_test(NAME uapp.database.view         COMMAND uapp_database_tests "database.view")
+add_test(NAME uapp.database.store        COMMAND uapp_database_tests "database.store")
+add_test(NAME uapp.database.differential COMMAND uapp_database_tests "database.differential")
+add_test(NAME uapp.database.bounds       COMMAND uapp_database_tests "database.bounds")
+
+set_tests_properties(uapp.database.property uapp.database.view uapp.database.store
+                     uapp.database.differential uapp.database.bounds
+                     PROPERTIES TIMEOUT 300)
+
+# ---------------------------------------------------------------------------
 # core/sync/spike — the Fugue CRDT correctness spike (ADR-0002, SP-6 R-1..R-3).
 #
 # A separate executable, and the MOST isolated one in the tree: it links only

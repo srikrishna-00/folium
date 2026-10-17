@@ -107,6 +107,43 @@ enum class Status : std::int32_t {
     ConversionInputTooLarge  = 800,  ///< source document exceeds the conversion input cap
     ConversionInputMalformed = 801,  ///< source document contains an embedded NUL byte
     ConversionOutputTooLarge = 802,  ///< the emitted document would exceed the output cap
+
+    // --- database / collection system (9xx) --------------------------------
+    // The property-typed database of spec section 15 (core/database): a named
+    // schema of typed property DEFINITIONS plus rows of property VALUES, with
+    // a Table view over them.
+    //
+    // Every one of these sixteen has a code path behind it today -- the rule
+    // the 7xx and 8xx blocks state for themselves ("a code with no code path
+    // behind it is a promise this enum cannot keep") is why the NOT
+    // IMPLEMENTED halves of section 15 get NO codes: there is no
+    // DatabaseRelationCycle, no DatabaseFormulaError and no
+    // DatabaseGroupingUnsupported here, because Relation, Formula and
+    // grouping do not exist. `DatabasePropertyTypeUnsupported` and
+    // `DatabaseViewKindUnsupported` cover "you named one of those" the same
+    // way BlockTypeUnsupported covers a declared-but-absent block type.
+    //
+    // They are also deliberately COARSER than one-code-per-rule. All four
+    // name limits (database, property, option, view) report
+    // DatabaseNameTooLong, because "a name in this namespace is too long" is
+    // one condition with one fix and four codes for it would make logs harder
+    // to read, not easier -- the same argument FileEmpty already makes.
+    DatabasePropertyLimitExceeded     = 900,  ///< more properties than kMaxPropertiesPerDatabase
+    DatabaseRowLimitExceeded          = 901,  ///< more rows than kMaxRowsPerDatabase
+    DatabaseOptionLimitExceeded       = 902,  ///< option set past kMaxSelectOptionsPerProperty
+    DatabaseViewLimitExceeded         = 903,  ///< more saved views than kMaxViewsPerDatabase
+    DatabaseViewSpecTooComplex        = 904,  ///< more filters/sorts than the compiler will join
+    DatabaseNameTooLong               = 905,  ///< any name in this namespace is over its cap
+    DatabaseValueTooLarge             = 906,  ///< a Text value over kMaxPropertyTextBytes
+    DatabaseValueMalformed            = 907,  ///< a value violates its own type's rules
+    DatabaseValueTypeMismatch         = 908,  ///< value's type is not the property's type
+    DatabaseOptionNotInSchema         = 909,  ///< selected an option the property does not define
+    DatabasePropertyNotInSchema       = 910,  ///< referenced a property the database does not define
+    DatabasePropertyDuplicated        = 911,  ///< duplicate property/option id or name in a schema
+    DatabasePropertyTypeUnsupported   = 912,  ///< a section 15 property type that is NOT IMPLEMENTED
+    DatabaseViewKindUnsupported       = 913,  ///< a section 15 view kind that is NOT IMPLEMENTED
+    DatabaseFilterOperatorUnsupported = 914,  ///< operator is not legal for that property type
+    DatabaseSchemaMalformed           = 915,  ///< the schema itself is structurally invalid
 };
 
 /// True iff the operation succeeded. Prefer `if (!uapp::is_ok(s))` over

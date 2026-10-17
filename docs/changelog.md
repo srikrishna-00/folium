@@ -12,6 +12,84 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `core/database`: property-typed databases and Table views (spec §15)
+
+First real slice of spec §15's Database System: a named collection of typed property
+*definitions* (the schema) plus *rows* of typed property *values* conforming to it, anchored
+to a host Page as a sibling of Blocks (spec §14's own hierarchy line: `Page -> Blocks / Child
+Pages / Databases / Files`).
+
+**Architectural decision — `docs/adr/0004-database-anchored-to-page.md`:** a Database is its
+own entity with its own `DatabaseId`, referencing a host `blocks::PageId`, rather than (a) a
+kind of Page (`page.kind = database`, what `database-design.md` §3.4 originally specified) or
+(b) a block payload (`BlockType::Database`). (a) was rejected because `blocks::Page` is a
+narrow, concrete type with four real readers — `BlockStore`, `DocumentService`, the Markdown
+converter, and the already-frozen C ABI — none of which can safely be taught "some pages
+aren't documents" without a schema migration touching a published ABI. (b) was rejected
+because a schema plus option sets is orders of magnitude larger than a block's content, and it
+would make one database's lifetime equal to one block's, making multiple views of one
+collection on different pages impossible. The chosen shape is purely additive: new tables,
+zero edits to `page`, `block`, `core/conversion`, or `core/capi`. Recorded as a deliberate
+deviation from `database-design.md` §3.4 (annotated in place), deferred rather than rejected:
+once child pages and `page.kind` land, a "full-page database" becomes exactly what §3.4
+originally specified.
+
+**Property types implemented** (a closed tagged union, not a stringly-typed bag — a Select
+value actually references one of its property's defined options, not a free string that
+happens to match): Text, Number, Boolean, Select, Multi-select, Date. **Declared, NOT
+IMPLEMENTED** with machine-readable reasons (same `_not_implemented_reason()` precedent
+`core/blocks` set): Person, URL, Email, File, Relation, Rollup, Formula — Relation/Rollup need
+cross-database references and Formula needs an expression evaluator, both real future
+features, not oversights.
+
+**Views:** Table only — filtering (equality/comparison operators appropriate to each property
+type), sorting (ascending/descending, any property), and named saved-view configurations
+(filter+sort, persisted separately from row data). Board/Calendar/Timeline/Gallery/List
+declared, NOT IMPLEMENTED with reasons: every one of them is Table plus a projection (a Board
+needs a Select to group by, a Calendar/Timeline needs a Date, a Gallery needs a File/image), so
+Table had to land first. `database::evaluate_table_view` (an in-memory specification) and
+`query_table_view` (the SQL the adapter actually runs) are tested **differentially** — both
+must produce the identical row sequence over the same data, so the SQL is checked against a
+specification rather than against a reading of it.
+
+Limits, each justified rather than picked for looks (same discipline as
+`blocks::kMaxBlockDepth`): `kMaxPropertiesPerDatabase` = 100, `kMaxRowsPerDatabase` = 100,000,
+`kMaxSelectOptionsPerProperty` = 256, `kMaxPropertyTextBytes` = 4096 (distinct from
+`blocks::kMaxBlockTextBytes`'s 1 MiB — a block is document content, a property value is a
+spreadsheet cell), `kMaxFiltersPerView` = 32, `kMaxSortsPerView` = 8, `kMaxViewsPerDatabase` =
+64, `kMaxDatabaseNameBytes` = 512 (matches `blocks::kMaxPageTitleBytes` exactly, since a
+database's name is shown in the same UI surfaces a page title is).
+
+Persistence in `storage/sqlite/src/sqlite_database_store.cpp`: real relational tables
+(`db_collection`, `db_property`, `db_select_option`, `db_row`, `db_value`, `db_value_option`,
+`db_view`, `db_view_filter`, `db_view_sort`), not a stringified blob — values keep their type on
+disk and are efficiently filterable/sortable by the Table view. Validation runs on write AND on
+read (spec §28: a synced or restored `.db` file is untrusted input even though it used to be
+ours) and is total against the schema: every property id a row carries must be one the schema
+defines, every value must match its property's declared type, every Select/Multi-select choice
+must be one the property's own option set defines.
+
+**Tests: 68 real assertions**, including a bug this project's own test suite caught in itself,
+not the product: a test building two independent databases on the same host page reused a
+fixture property's hardcoded id (`date_property()`'s fixed `PropertyId`) across both, colliding
+on `db_property.id`'s global primary key — a scenario a real `IdGenerator` would never produce,
+since every id in this codebase is globally unique by construction. Fixed in the test fixture,
+not the schema. Verified independently (not just agent self-report): a full project rebuild at
+`-Werror` with zero warnings, `ctest` 39/39 (was 29/29, +5 new suites, after the fixture fix),
+the new suite's own binary confirming 68/68 directly, a full from-scratch Debug+ASan/UBSan
+rebuild of the entire project (not just the new module) also 39/39 clean, and `nm -u` on the
+built `core/database` static library confirming it reaches `core/blocks` and `core/common`
+only — never `storage/sqlite` directly, matching every other core module's layering.
+
+NOT IMPLEMENTED, each with its own documented reason in `core/database/include/uapp/database/
+*.h`: rows-open-as-pages (would entangle a row's lifetime with a page's, and needs to write to
+the `page` table this module does not own), schema evolution / property retyping after creation
+(a product decision about data loss under sync, not a coding gap), manual row reordering (needs
+the fractional-index work already deferred for blocks), workspace-scoping (inherits the host
+page's implicit workspace, same as `page` itself), and no C ABI surface yet (16 new `Status`
+codes flatten to `UAPP_STATUS_UNEXPECTED`, consistent with how every prior module landed before
+getting ABI coverage).
+
 ### Added — `core/conversion`: `blocks::Page` ↔ Markdown, both directions (spec §10)
 
 **The first concrete edge of the conversion engine, and a correction to the architecture it

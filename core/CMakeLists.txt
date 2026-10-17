@@ -29,6 +29,21 @@ add_subdirectory(search)
 # enforces that rather than this comment.
 add_subdirectory(conversion)
 
+# core/database — the property-typed database/collection system of spec
+# section 15: a named schema of typed property DEFINITIONS plus rows of
+# property VALUES, with a Table view (filter + sort + saved configuration)
+# over them. It belongs in the portable domain layer because the parts that
+# live here are pure: what a property TYPE is, what makes a row valid against
+# a schema, and what a Table view MEANS (database::evaluate_table_view is the
+# semantic definition the SQL compiler in storage/sqlite must agree with).
+#
+# Like core/conversion it DOES link a domain — core/blocks, PUBLIC-ly —
+# because a Database is anchored to a blocks::Page rather than being a kind of
+# page. That fork is argued in docs/adr/0004-database-anchored-to-page.md.
+# It does NOT link storage/sqlite; the link line in
+# core/database/CMakeLists.txt is what enforces that rather than this comment.
+add_subdirectory(database)
+
 # core/capi is deliberately NOT added here. It is the composition root for the
 # slice and therefore links the SQLite adapter, so it has to be configured
 # after storage/. The top-level CMakeLists.txt adds it there, with a comment.
