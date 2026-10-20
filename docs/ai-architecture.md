@@ -1,8 +1,14 @@
 # AI Architecture — Providers, RAG, Agents
 
-**Status:** Phase 0 draft — awaiting human sign-off
-**Version:** 0.0.0
-**Date:** 2026-09-29
+**Status:** Phase 0 draft, **partially implemented** — see §14 for what exists, what does not,
+and where the code deliberately differs from the prose above it
+**Version:** 0.1.0
+**Date:** 2026-09-29 (§14 added 2026-10-20)
+
+> **§3 of this document has been amended by implementation.** The provider interface that
+> exists (`ai/provider/include/uapp/ai/provider.h`) exposes **all seven** of spec §17's
+> methods, not §3's five-primitives-plus-task-services split. The reason is in §14.1. Read §14
+> before treating any signature in §3 as current.
 
 Implements spec §17 (provider abstraction), §18 (RAG), §19 (features), §20 (agents),
 §24 (privacy).
@@ -56,6 +62,11 @@ Implements spec §17 (provider abstraction), §18 (RAG), §19 (features), §20 (
 ```
 
 ## 3. `AIProviderPort`
+
+> **SUPERSEDED BY §14.1.** The split argued below was not adopted. The implemented interface is
+> all seven methods, as C++ (`uapp::ai::AIProvider`), not the C signatures sketched here; the C
+> ABI is deferred. The C declarations in this section are a Phase 0 sketch and are **not** the
+> current interface. §14.1 states why and what survives of this section's reasoning.
 
 Spec §17 lists `generate/chat/embed/summarize/classify/extract/translate`. Making all seven
 provider primitives is wrong: no provider implements `summarize` natively, so every adapter
@@ -585,3 +596,218 @@ is not among them:
 **H-29 is unaffected and non-negotiable: LOCAL_ONLY still fails closed.** A device being
 slow is not a reason to weaken a policy the user set. `AI_NO_LOCAL_MODEL` remains the
 answer, with an offer to download a smaller model where one fits.
+
+---
+
+## 14. Implementation status (added 2026-10-20)
+
+This section exists because §1–§13 are a Phase 0 design and part of it is now code. Where the
+two disagree, **this section is authoritative** and names the disagreement rather than leaving
+it to be discovered.
+
+What was built: `ai/provider` (the abstraction, the consent boundary, the registry) and
+`ai/local` (one real on-device provider plus one deliberately-incapable one), with 70 unit
+tests in `tests/ai/`. Everything else in this document is **NOT IMPLEMENTED** — see §14.6.
+
+### 14.1 FLAGGED: §3's five-primitives split was not adopted
+
+**What §3 says:** the seven §17 methods should become five provider primitives
+(`chat/embed/rerank/health/count_tokens`) plus four "task services" (`summarize/classify/
+extract/translate`) built on top, because "no provider implements `summarize` natively, so
+every adapter would reimplement the same prompt".
+
+**What was built:** `uapp::ai::AIProvider` exposes **all seven**, as spec §17's own method list
+literally specifies.
+
+**Why the fork, in order of weight:**
+
+1. **§3's split is only correct for providers whose single primitive is text completion, and
+   the only provider in this tree is not one of those.** `ai::local::LocalHeuristicProvider`
+   implements `summarize`, `classify` and `extract` *natively* — they are its whole point — and
+   implements `chat` not at all. Under §3's shape it would have to expose a `chat()` it cannot
+   perform so that a task service could build `summarize()` on top of it, which inverts the
+   truth. An abstraction that cannot describe its only implementation is the wrong abstraction.
+2. **A non-LLM provider is not hypothetical.** ONNX classifiers, extractive summarisers and
+   field extractors are all real, all useful on the ADR-0002 decision 3 device floor, and none
+   of them chat. Spec §17 says "do not hard-code the product to one AI provider"; hard-coding it
+   to one provider *shape* is the same mistake one level up.
+3. **§3's duplication concern is real and is answered by a base class, not a smaller
+   interface.** The right home for "summarize via a chat round-trip with our prompt template"
+   is a `ChatBackedProvider` intermediate base that a completion-only adapter inherits: write
+   the prompt once, inherit it seven times. **NOT IMPLEMENTED** — it is a prompt template and a
+   response parser with no model to run them against, and writing it blind would be the
+   "pretend it works" failure spec §5 forbids. It is the first thing the first real generative
+   adapter must bring with it.
+
+**What survives of §3:** `health()` is kept and is what the registry filters on. `rerank()` and
+`count_tokens()` are deferred — `rerank` has no caller until the §7 retriever exists, and
+`count_tokens` cannot be implemented honestly without the tokenizer AIQ-6 forecloses
+(`ConsentGate::approx_tokens()` is bytes/4, labelled an estimate everywhere it surfaces, and
+every result carries `ResultMeta::tokens_are_estimates`). The `policy` token idea in §3.1 **was
+adopted and strengthened** — see §14.2. §3.2's role set, including the `document` role, is
+implemented as `uapp::ai::Role`.
+
+Also note: §3's declarations are C. The implemented module is C++ (ADR-0001's core language),
+and a C ABI (`uapp_ai.h`) is deferred because the C shape of `chat()` is not known yet — it has
+no streaming callback, no cancellation handle and no tool-call vocabulary. `core/capi/src/
+capi_common.cpp` records two constraints for whoever mints it: the consent status codes must
+stay separate C constants (collapsing them would leave a binding unable to tell "ask the user"
+from "the policy forbids this, do not ask", i.e. H-29), and **the ABI must never let a consent
+grant cross as a bool or an int** — it has to be an opaque handle minted by a gate call, or not
+cross at all.
+
+### 14.2 The consent boundary, as implemented (§13.2)
+
+§3.1 proposed an "unforgeable token issued by the policy gate" that a provider adapter refuses
+to work without. That is the right instinct and it is implemented as a **type-level**
+constraint rather than an opaque integer:
+
+| Mechanism | Where |
+|---|---|
+| `Content` carries the text for every provider method, is stamped with an `EgressScope` at construction, has no mutators, and is move-only | `ai/provider/include/uapp/ai/consent.h` |
+| The only public constructor is `Content::on_device_only()`, which stamps `OnDeviceOnly` | ditto |
+| The **only** route to `EgressScope::Authorized` is `ConsentToken::release()`, which consumes the token | ditto |
+| `ConsentToken`'s real constructor is private, with `ConsentGate` as its sole friend; move-only, single-use, inert once moved from | ditto |
+| `AIProvider`'s seven public methods are **non-virtual** and check the stamp against the provider's own `Locality` before dispatching to the overridable `do_*` | `ai/provider/src/provider.cpp` |
+
+The property: **there is no expression in the codebase that sends content to an off-device
+provider without a `ConsentGate` having run.** Not a convention — there is no such expression to
+write. Enforced in two halves: `static_assert`s in `tests/ai/consent_test.cpp` (adding a
+convenience constructor or a setter stops that file compiling) and 19 runtime cases that assert
+both the status and that the provider's body never executed.
+
+Behaviours from §13.2 that are implemented and tested, not merely intended:
+
+- `LOCAL_ONLY` **fails closed without prompting** (step 3, H-29). The test asserts the prompt
+  callback's call count is 0, with a prompt wired to say Allow.
+- A denial **never resolves the plaintext** (the resolver's call count is asserted to be 0).
+- A null prompt callback is treated as denial, so "the dialog is not built yet" fails closed.
+- The grant is bound to one provider id, and a grant for provider A is refused by provider B.
+- Expiry is re-checked **at the provider boundary on every call**, not once at release time.
+- A `FirstPartyServer` provider is subject to the same check as a third party — §13.1 exists
+  precisely to stop "our server" being treated as "on device".
+- Revocation stops future releases only, and no API here claims to recall data already sent
+  (AIQ-7).
+- The gate requires the resolved plaintext to be **exactly** the byte count shown in the prompt;
+  anything else is `AI_CONSENT_SCOPE_MISMATCH`, because the user approved a specific amount of a
+  specific thing.
+
+### 14.3 FLAGGED: three places the implementation is weaker or different than §13 implies
+
+1. **`ContentDigest` is not a cryptographic hash.** It is 128 bits of FNV-1a. It catches
+   content substituted between what the user was shown and what gets sent; it does **not**
+   resist an adversary, who with code execution in this process would call the protected
+   virtual directly. §13.2 step 6's persisted `byte_range_hash`, hash-chained into the audit log
+   (`security-model.md` §10), needs a real hash and therefore a module that links
+   `security/crypto`. **NOT IMPLEMENTED.** When it lands it belongs in a module *above*
+   `ai/provider` (an `ai/policy`), not inside it: keeping crypto off this module's link line is
+   what makes "just decrypt it here, we already hold the document key" a compile error instead
+   of a working shortcut.
+2. **Step ordering differs from §13.2's numbering.** §13.2 says "6. write consent_record BEFORE
+   decrypting / 7. decrypt". `ConsentGate::request_consent()` resolves first, because the record
+   binds a digest *of* the resolved content and a digest of unresolved content cannot exist. The
+   guarantee §13.2 protects is intact and is asserted directly: the audit record exists before
+   anything *can* be sent, since no authorised `Content` exists until after the audit call
+   (`ai.consent.audit_precedes_any_possible_egress`).
+3. **Plaintext is not zeroed on destruction.** §13.2 step 7 wants an arena-allocated,
+   never-swapped, zeroed-on-crash-recovery scratch buffer (T-206). `Content` holds
+   `std::string`s. Fixing it needs `crypto::SecureBytes`, i.e. the dependency point 1 argues
+   against taking here. The gap is real and is recorded rather than papered over with a `memset`
+   in a destructor that `std::string` is free to have already moved out of.
+
+Also: `ConsentId` is a per-gate sequence number, not a random 128-bit id — deliberately, so this
+module needs no CSPRNG. Global uniqueness has to come from the persisted consent store, which
+does not exist. And consent records are in-memory only.
+
+### 14.4 `LocalHeuristicProvider` — NOT AI, and what it actually does
+
+> **It is not a model of any kind.** No neural network, no transformer, no weights, no training
+> data, no inference. TF-IDF sentence scoring, whole-word keyword matching and hand-written
+> byte-pattern scanners. **Output derived from it must never be presented to a user as "AI",
+> "AI-generated", "AI-written" or "generated by a model".** Spec §5 forbids pretending
+> unsupported functionality works, and mislabelling this would be the most consequential
+> available form of that.
+>
+> Enforced structurally, not by this paragraph: `ProviderDescriptor::provenance` is required,
+> every result struct carries a `ResultMeta::provenance`, and the non-virtual base class copies
+> it from the descriptor so a provider cannot lie. A UI that wants to print "AI-generated" has
+> to read a field saying `HEURISTIC_NO_MODEL` and choose to ignore it.
+
+| §17 method | State | What it is |
+|---|---|---|
+| `summarize` | implemented, **extractive** | Smoothed TF-IDF over the input's own sentences, `weight(t) = (1+ln tf)·ln((N+1)/(df+0.5))`, length-normalised by `sqrt(distinct terms)`; top N **in document order**, with byte spans into the source. Not truncation — tested by requiring it to skip a greeting for sentences in the middle. |
+| `classify` | implemented, **keyword/rule-based** | Whole-word hint matching with diminishing returns per repeat, over a **caller-supplied** label set; **abstains** rather than guessing. |
+| `extract` | implemented, **pattern-based** | Emails, http/https URLs, calendar-validated ISO-8601 dates, signed integers/decimals, currency amounts — each with its byte span, overlaps arbitrated. Hand-written scanners, not `std::regex` (whose constructor throws, and ADR-0001 bans exceptions). |
+| `embed` | implemented, **lexical fingerprint, NOT semantic** | 256-dim signed hashing over word unigrams + character 3-grams, L2-normalised. Deterministic; near-duplicates land near each other; **"car" and "automobile" are orthogonal**. A placeholder for §6's real 384-dim model, and the width differs from 384 on purpose so the two can never be confused by shape (AIQ-5 / §13.4: two models' vectors must never share a space). |
+| `generate` | **NOT IMPLEMENTED** | `AI_CAPABILITY_NOT_IMPLEMENTED`, bit clear, empty output. |
+| `chat` | **NOT IMPLEMENTED** | ditto |
+| `translate` | **NOT IMPLEMENTED** | ditto |
+
+The three refusals are the point. They need a real language model, and there is no honest
+heuristic for "write a paragraph about this" or "render this in French". A canned string, an
+echo of the input, or the first sentence dressed up as generation would be *worse than an error*
+because the caller could not tell. This is the same choice `database/property.h` makes for its
+seven unimplemented property types and `pdf-engine` makes for everything past viewing.
+
+Two deliberate refusals *inside* the implemented three, both of the same kind: `03/04/2026` is
+not extracted as a date (3 April or 4 March depending on the reader; guessing produces a
+confident wrong date, which is worse than nothing), and a currency amount's normalised form
+keeps the **symbol** rather than mapping `$` to `USD` (`$` is also CAD, AUD, MXN — a code would
+be invented information).
+
+### 14.5 Registry and failover (§5), as implemented
+
+Implemented: capability match, an explicit **locality ceiling** as the policy filter, health
+filtering, and deterministic explainable ranking (pinned → locality ascending, on-device always
+first → health → registration order). Plus `is_failover_eligible()`, a **closed allow-list**
+holding only `AI_PROVIDER_UNAVAILABLE` and `AI_CAPABILITY_NOT_IMPLEMENTED`, so a newly added
+status must be considered deliberately before it can cause a second egress of a user's content.
+`AI_CONTENT_POLICY_REJECTED` is never retried; `AI_RATE_LIMITED` does not fail over.
+
+A pinned provider that cannot serve is an error with a specific code
+(`AI_PROVIDER_NOT_REGISTERED` / `AI_CAPABILITY_NOT_IMPLEMENTED` / `AI_POLICY_BLOCKED`), never a
+silent substitution — §1 rule 5.
+
+**NOT IMPLEMENTED from §5:** circuit breakers, p95-latency tracking, cost ranking, retry with
+jittered backoff. All four need observed call history or a cost model, and inventing either with
+one deterministic local provider in the tree would be fiction. The seam they attach to is
+`Selection` plus `Health`.
+
+### 14.6 Everything else in this document is NOT IMPLEMENTED
+
+- **§2's policy gate as a layer**, and §4 steps 3 and 5: the local credential/PII content
+  classifier and quota accounting. `ConsentGate` does policy, prompt, audit and grant only —
+  which is why `CLOUD_OK` still prompts in this slice, the conservative direction and the one
+  that does not have to be revisited when the classifier lands.
+- **§6 local inference.** No llama.cpp, no ONNX Runtime, no model download, no signature
+  verification, no device-capability probe. SP-4 has not been run.
+- **§7 / §13.3 RAG in its entirety**: extraction into chunks, chunking, the vector store,
+  hybrid retrieval, RRF, reranking, context assembly, citation verification. Not started.
+  `SummarizeResult::source_spans` and `ExtractedField::offset` are the span-provenance
+  groundwork it will need.
+- **§8 model licensing** — no models ship, so there is nothing in `THIRD_PARTY_NOTICES` yet.
+  The rules stand for the first one.
+- **§9 the agent framework in its entirety**: Agent, Tool, Memory, Planner, Executor,
+  Evaluator, PermissionManager, AuditLogger, the execution loop, the ingest agent, the
+  injection posture. Not started. §9.5's item 1 (retrieved content in the `document` role) is
+  the one piece that exists, as `uapp::ai::Role`.
+- **§10 caching and cost control**: no response cache, no embedding cache, no prompt caching,
+  no token budgeting, no batching policy (the `embed()` batch *shape* exists and is capped at
+  §10's 256).
+- **§11 evaluation**: no eval harness, no labelled sets, no nightly runs. Nothing here makes a
+  quality claim that would need one — the output-quality assertions in `tests/ai/` are
+  hand-written unit cases about a deterministic heuristic, not a model eval.
+- **§12's open questions** are all still open. AIQ-6 is relied upon (no tokenizer, approximate
+  budgeting, every count labelled an estimate). AIQ-7 is half-answered: revocation exists and is
+  honest about stopping only future egress; retention of consent records is undefined because
+  nothing persists them.
+- **Any cloud provider.** There is no network access to a real provider API in this environment
+  and no API key, so an adapter could not be honestly tested, and a fake one would be exactly
+  the §5 violation this module exists to avoid. The consent boundary is proved against an
+  off-device **test double that makes no network call** — which tests the boundary, not the
+  adapter. Writing the first real adapter is where §14.1's `ChatBackedProvider`, streaming,
+  cancellation and the C ABI all come due at once.
+- **A fuzz target.** This *is* an untrusted-input path (a provider is handed a user document, a
+  synced page or an OCR result) and a harness over the field scanners and the sentence splitter
+  would be valuable. Spec §29's required-target list names the format parsers, so this is a
+  follow-up — recorded as NOT IMPLEMENTED, not as unnecessary.

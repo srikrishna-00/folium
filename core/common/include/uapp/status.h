@@ -193,6 +193,59 @@ enum class Status : std::int32_t {
     KeyRecordVersionUnsupported = 1100,  ///< wrapped-key record version this build cannot read
     KeyRecordRoleMismatch       = 1101,  ///< record holds a different key role than was asked for
     KeyScopeIdInvalid           = 1102,  ///< workspace/document id is empty, null, or over the cap
+
+    // --- AI provider abstraction (12xx) ------------------------------------
+    // ai/provider + ai/local — the provider-independent AI abstraction of
+    // spec §17 and ai-architecture.md §3/§13, plus the one real local
+    // implementation behind it (ai::local::LocalHeuristicProvider).
+    //
+    // It does NOT cover RAG (spec §18), the agent framework (spec §20) or any
+    // cloud provider: none of those exist, and per the rule the 7xx/8xx/9xx
+    // blocks state for themselves, a code with no code path behind it is a
+    // promise this enum cannot keep.
+    //
+    // TWO CODES HERE BEND THAT RULE, DELIBERATELY AND NARROWLY.
+    // `AiRateLimited` and `AiContentPolicyRejected` are *provider-reported*
+    // conditions, so no on-device provider can raise them and this build has
+    // no network. They are allocated anyway because they are the two statuses
+    // whose HANDLING is a property of the abstraction rather than of any one
+    // provider: ai-architecture.md §5 forbids retrying a content-policy
+    // refusal and forbids failing over across a locality boundary, and
+    // `ai::is_failover_eligible()` encodes both. That predicate is real
+    // compiled code with real tests, which is the closest thing to a code
+    // path a remote-only condition can have here. Flagged for review in
+    // docs/ai-architecture.md §14.
+    //
+    // Note the deliberate SPLIT of the consent failures into four codes
+    // (Required / ScopeMismatch / Expired / TokenSpent) where the 10xx and
+    // 11xx blocks deliberately COLLAPSE their failures into one. The reason is
+    // the exact inverse of their oracle argument: these four are decided over
+    // PLAINTEXT METADATA (a provider id, a timestamp, a content digest) before
+    // any key material or content is touched; they are reported to the user's
+    // own client, not to a remote peer; and "you never asked", "you asked
+    // about something else", "your grant expired" and "that grant was already
+    // used" need four different responses from the UI. One AI_CONSENT_FAILED
+    // would make the consent boundary undebuggable exactly where it has to be
+    // auditable.
+    AiProviderUnavailable      = 1200,  ///< provider is registered but not usable right now
+    AiCapabilityNotImplemented = 1201,  ///< this provider does not implement that §17 method
+    AiProviderNotRegistered    = 1202,  ///< no provider with that id in the registry
+    AiProviderDuplicated       = 1203,  ///< a provider with that id is already registered
+    AiNoEligibleProvider       = 1204,  ///< no registered provider satisfies the selection
+    AiPolicyBlocked            = 1205,  ///< workspace ai_policy forbids egress; fails closed
+    AiConsentRequired          = 1206,  ///< off-device provider handed unauthorised content
+    AiConsentDenied            = 1207,  ///< the user was asked and said no
+    AiConsentScopeMismatch     = 1208,  ///< grant names a different provider, scope or content
+    AiConsentExpired           = 1209,  ///< the grant's TTL had passed
+    AiConsentTokenSpent        = 1210,  ///< that single-use consent token was already consumed
+    AiInputEmpty               = 1211,  ///< nothing to work with: no content, or only whitespace
+    AiInputTooLarge            = 1212,  ///< request content past this build's input cap
+    AiInputMalformed           = 1213,  ///< embedded NUL, or a disallowed C0 control byte
+    AiLabelSetInvalid          = 1214,  ///< classify() label set empty, oversized or duplicated
+    AiResponseMalformed        = 1215,  ///< the PROVIDER broke its own declared output contract
+    AiRateLimited              = 1216,  ///< provider-reported throttling — never retried here
+    AiContentPolicyRejected    = 1217,  ///< provider refused the content — NEVER retried (§5)
+    AiConsentRevoked           = 1218,  ///< the grant was revoked; stops FUTURE egress only
 };
 
 /// True iff the operation succeeded. Prefer `if (!uapp::is_ok(s))` over

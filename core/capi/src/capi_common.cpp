@@ -309,6 +309,65 @@ uapp_status_t to_c_status(Status s) noexcept {
         case Status::KeyRecordVersionUnsupported:
         case Status::KeyRecordRoleMismatch:
         case Status::KeyScopeIdInvalid:
+        // ===================================================================
+        // ai/provider + ai/local (spec §17): NOT MINTED — the same two
+        // questions for a seventh time, with the same answer as crypto's and
+        // a stronger reason.
+        // ===================================================================
+        // The core grew nineteen codes; a C caller can reach none, because
+        // there is no uapp_ai.h. And the AI ABI is deferred on the hardest
+        // version of the crypto argument: the C shape of `AIProvider::chat()`
+        // IS NOT KNOWN YET. It has no streaming callback, no cancellation
+        // handle and no tool-call vocabulary in this slice (see the NOT
+        // IMPLEMENTED list at the bottom of
+        // ai/provider/include/uapp/ai/provider.h), and all three are
+        // signature changes the first real generative adapter has to make.
+        // Freezing seven function signatures and nineteen status constants
+        // before any of them exists would commit the boundary to the wrong
+        // shape in a way a version bump cannot undo cheaply.
+        //
+        // TWO NOTES FOR WHOEVER MINTS THESE LATER, both about the consent
+        // boundary rather than about versioning:
+        //
+        //  1. AiPolicyBlocked / AiConsentRequired / AiConsentDenied /
+        //     AiConsentScopeMismatch / AiConsentExpired /
+        //     AiConsentTokenSpent / AiConsentRevoked MUST survive as SEPARATE
+        //     C constants. That is the exact opposite of the CryptoAuthFailed
+        //     rule above, and deliberately so: the crypto failures are
+        //     collapsed because distinguishing them hands a remote peer a
+        //     decryption oracle, whereas these seven are decided over
+        //     plaintext metadata, are reported to the user's own client, and
+        //     need different things said in the UI. Collapsing them here
+        //     would leave a mobile binding unable to tell "ask the user" from
+        //     "the policy forbids this, do NOT ask" — and the second is H-29,
+        //     the fail-closed rule ADR-0002 decision 1 rests on.
+        //  2. A C ABI for this module must NOT expose any way to build an
+        //     egress-authorised payload from a bool or an int. The C++
+        //     boundary makes that unconstructible by type
+        //     (ai/provider/include/uapp/ai/consent.h); a careless
+        //     `uapp_ai_chat(..., int user_consented)` would throw that away
+        //     at the one layer every mobile binding goes through. A consent
+        //     grant has to cross as an opaque handle minted by a gate call,
+        //     or not cross at all.
+        case Status::AiProviderUnavailable:
+        case Status::AiCapabilityNotImplemented:
+        case Status::AiProviderNotRegistered:
+        case Status::AiProviderDuplicated:
+        case Status::AiNoEligibleProvider:
+        case Status::AiPolicyBlocked:
+        case Status::AiConsentRequired:
+        case Status::AiConsentDenied:
+        case Status::AiConsentScopeMismatch:
+        case Status::AiConsentExpired:
+        case Status::AiConsentTokenSpent:
+        case Status::AiConsentRevoked:
+        case Status::AiInputEmpty:
+        case Status::AiInputTooLarge:
+        case Status::AiInputMalformed:
+        case Status::AiLabelSetInvalid:
+        case Status::AiResponseMalformed:
+        case Status::AiRateLimited:
+        case Status::AiContentPolicyRejected:
             return UAPP_STATUS_UNEXPECTED;
     }
     // A code the core added and this layer has not been taught. We must not

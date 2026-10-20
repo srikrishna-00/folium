@@ -198,6 +198,33 @@ if(UAPP_CRYPTO_ENABLED)
     add_subdirectory(security)
 endif()
 
+# --- ai/ — the provider-independent AI abstraction (spec §17) ---------------
+# Added here, straight after security/, for the same reason security/crypto is
+# added straight after core/: ai/provider links uapp::core_common PUBLIC-ly
+# (Status) and NOTHING else — no SQLite, no libsodium, no document model, no
+# network. Adding it before storage/ and file-engine/ makes the direction
+# visible: the AI layer depends on core/common alone, and nothing in the tree
+# depends on the AI layer yet. The E2EE integration it will eventually need
+# (ai-architecture.md §13.2 step 7, decrypting consented ranges) is the
+# CALLER's job through a resolver callback, which is why this module sits
+# beside security/ rather than on top of it.
+#
+# UNCONDITIONAL, unlike pdf-engine and security/crypto. Both of those are gated
+# because they need a third-party binary a fresh clone may not have; this
+# module has no third-party dependency at all, so there is no configuration in
+# which it is absent and no reason for anything downstream to report "skipped"
+# for code that was never compiled.
+#
+# NOT skipped under UAPP_ENABLE_FUZZING, unlike storage/ and core/capi. This IS
+# an untrusted-input path — a provider is handed a user document, a synced page
+# or an OCR result. No fuzz target is written for it in this slice, which is a
+# judgement call worth recording rather than leaving implicit: spec §29's
+# required-target list names the format parsers, and the highest-value harness
+# here (the field scanners and the sentence splitter over arbitrary bytes) is a
+# follow-up. Recorded as NOT IMPLEMENTED in docs/ai-architecture.md §14, not as
+# unnecessary.
+add_subdirectory(ai)
+
 if(NOT UAPP_ENABLE_FUZZING)
     add_subdirectory(storage)
 endif()

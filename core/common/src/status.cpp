@@ -108,6 +108,26 @@ const char* status_code(Status s) noexcept {
             return "KEY_RECORD_ROLE_MISMATCH";
         case Status::KeyScopeIdInvalid:
             return "KEY_SCOPE_ID_INVALID";
+
+        case Status::AiProviderUnavailable:      return "AI_PROVIDER_UNAVAILABLE";
+        case Status::AiCapabilityNotImplemented: return "AI_CAPABILITY_NOT_IMPLEMENTED";
+        case Status::AiProviderNotRegistered:    return "AI_PROVIDER_NOT_REGISTERED";
+        case Status::AiProviderDuplicated:       return "AI_PROVIDER_DUPLICATED";
+        case Status::AiNoEligibleProvider:       return "AI_NO_ELIGIBLE_PROVIDER";
+        case Status::AiPolicyBlocked:            return "AI_POLICY_BLOCKED";
+        case Status::AiConsentRequired:          return "AI_CONSENT_REQUIRED";
+        case Status::AiConsentDenied:            return "AI_CONSENT_DENIED";
+        case Status::AiConsentScopeMismatch:     return "AI_CONSENT_SCOPE_MISMATCH";
+        case Status::AiConsentExpired:           return "AI_CONSENT_EXPIRED";
+        case Status::AiConsentTokenSpent:        return "AI_CONSENT_TOKEN_SPENT";
+        case Status::AiInputEmpty:               return "AI_INPUT_EMPTY";
+        case Status::AiInputTooLarge:            return "AI_INPUT_TOO_LARGE";
+        case Status::AiInputMalformed:           return "AI_INPUT_MALFORMED";
+        case Status::AiLabelSetInvalid:          return "AI_LABEL_SET_INVALID";
+        case Status::AiResponseMalformed:        return "AI_RESPONSE_MALFORMED";
+        case Status::AiRateLimited:              return "AI_RATE_LIMITED";
+        case Status::AiContentPolicyRejected:    return "AI_CONTENT_POLICY_REJECTED";
+        case Status::AiConsentRevoked:           return "AI_CONSENT_REVOKED";
     }
     // Reached only if a caller casts a bogus integer into Status. We do not
     // trust that it cannot happen just because the enum is closed.
@@ -261,6 +281,45 @@ const char* status_message(Status s) noexcept {
             return "That wrapped-key record holds a different kind of key than was requested.";
         case Status::KeyScopeIdInvalid:
             return "The workspace or document identifier is empty or too long.";
+
+        case Status::AiProviderUnavailable:
+            return "That AI provider is registered but is not usable right now.";
+        case Status::AiCapabilityNotImplemented:
+            return "That AI provider does not implement the requested capability.";
+        case Status::AiProviderNotRegistered:
+            return "No AI provider is registered under that identifier.";
+        case Status::AiProviderDuplicated:
+            return "An AI provider is already registered under that identifier.";
+        case Status::AiNoEligibleProvider:
+            return "No registered AI provider satisfies that selection.";
+        case Status::AiPolicyBlocked:
+            return "The workspace AI policy forbids sending this content off the device.";
+        case Status::AiConsentRequired:
+            return "Sending this content to that provider needs explicit user consent first.";
+        case Status::AiConsentDenied:
+            return "The user declined to send this content to that provider.";
+        case Status::AiConsentScopeMismatch:
+            return "That consent grant was for a different provider, scope or content.";
+        case Status::AiConsentExpired:
+            return "That consent grant has expired.";
+        case Status::AiConsentTokenSpent:
+            return "That consent token has already been used; grants are single-use.";
+        case Status::AiInputEmpty:
+            return "The request carried no usable text.";
+        case Status::AiInputTooLarge:
+            return "The request content is larger than this build accepts.";
+        case Status::AiInputMalformed:
+            return "The request text contains a NUL byte or a disallowed control character.";
+        case Status::AiLabelSetInvalid:
+            return "The classification label set is empty, too large, or has duplicates.";
+        case Status::AiResponseMalformed:
+            return "The AI provider returned a response that violates its own contract.";
+        case Status::AiRateLimited:
+            return "The AI provider is rate limiting this client.";
+        case Status::AiContentPolicyRejected:
+            return "The AI provider refused this content under its content policy.";
+        case Status::AiConsentRevoked:
+            return "That consent grant was revoked; it stops future sends only.";
     }
     return "Unrecognised status code.";
 }

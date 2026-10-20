@@ -205,6 +205,83 @@ set_tests_properties(uapp.database.property uapp.database.view uapp.database.sto
                      PROPERTIES TIMEOUT 300)
 
 # ---------------------------------------------------------------------------
+# ai/provider + ai/local — the provider-independent AI abstraction (spec §17)
+# and the one real on-device implementation behind it.
+#
+# A separate executable, unconditional like core/conversion's: this module has
+# NO third-party dependency, so there is no build configuration in which it is
+# absent and nothing here reports "skipped" for code that was compiled.
+#
+# It links ONLY uapp::ai_local, which brings uapp::ai_provider and
+# uapp::core_common with it and NOTHING ELSE. So this binary cannot reach
+# SQLite, libsodium, security/crypto, security/keys, core/blocks, core/notes,
+# core/database, core/search, file-engine, pdf-engine or the C ABI. Two claims
+# are therefore checked by the link line rather than by review:
+#
+#   1. "a provider takes text and returns text, vectors or typed fields; it
+#      does not know what a Page is" — if an AI source ever needed the document
+#      model or a database handle, this target would fail to link.
+#   2. "the consent boundary in ai/provider/consent.h is a TYPE boundary, not
+#      a cryptographic one" — nothing here decrypts, and the shortcut of
+#      reaching into security/keys to do it would break this link line. The
+#      cryptographic half (a real digest of the consented ranges, a
+#      hash-chained persisted consent record) is NOT IMPLEMENTED and belongs
+#      in a module above this one. See docs/ai-architecture.md §14.
+#
+# It also reaches into ai/local/src for text_analysis.h, which is NOT a public
+# header, for the same reason the conversion suite reaches for
+# markdown_syntax.h: the sentence splitter, the TF-IDF ranker, the field
+# scanners and the hash embedder have invariants that deserve direct tests
+# rather than coverage inferred from the public API above them.
+#
+# Four CTest entries over one binary, split by name filter, because the four
+# failure modes mean four very different things:
+#   .consent  — THE SECURITY PROPERTY. Content reached, or could have reached,
+#               an off-device provider without a consent grant, or a grant was
+#               honoured that should not have been (wrong provider, expired,
+#               revoked, replayed). ADR-0002 decision 1. A failure here is not
+#               a bug in a feature, it is the privacy promise not holding.
+#   .contract — the abstraction's own guarantees: a provider's declared
+#               capabilities no longer match its behaviour, untrusted input got
+#               past a bound, or a provider's contract-violating output was
+#               passed through instead of being rejected.
+#   .local    — the on-device provider's OUTPUT QUALITY changed: the summariser
+#               stopped selecting by information content (i.e. became
+#               truncation), the classifier started guessing instead of
+#               abstaining, or a field scanner began accepting a near-miss.
+#   .registry — provider selection or the failover rules broke, including the
+#               two that are policy rather than plumbing: no silent
+#               substitution for a pinned model, and no failover across a
+#               locality boundary.
+# ---------------------------------------------------------------------------
+add_executable(uapp_ai_tests
+    support/test_main.cpp
+    ai/consent_test.cpp
+    ai/provider_contract_test.cpp
+    ai/local_heuristic_test.cpp
+    ai/registry_test.cpp)
+
+target_include_directories(uapp_ai_tests
+    PRIVATE support ai "${CMAKE_SOURCE_DIR}/ai/local/src")
+
+target_link_libraries(uapp_ai_tests
+    PRIVATE uapp::ai_local uapp::compiler_options)
+
+add_test(NAME uapp.ai.consent  COMMAND uapp_ai_tests "ai.consent")
+add_test(NAME uapp.ai.contract COMMAND uapp_ai_tests "ai.contract")
+add_test(NAME uapp.ai.local    COMMAND uapp_ai_tests "ai.local")
+add_test(NAME uapp.ai.text     COMMAND uapp_ai_tests "ai.text")
+add_test(NAME uapp.ai.registry COMMAND uapp_ai_tests "ai.registry")
+
+# TIMEOUT 300 rather than 120: three cases build a 1 MiB input on purpose
+# (the oversized-input bound, the at-the-cap boundary, and the pathological
+# all-numbers extraction), and under ASan+UBSan a megabyte of byte-at-a-time
+# scanning is several times slower than in a plain Debug build. A timeout that
+# only fails in the sanitizer configuration is worse than a generous one.
+set_tests_properties(uapp.ai.consent uapp.ai.contract uapp.ai.local uapp.ai.text
+                     uapp.ai.registry PROPERTIES TIMEOUT 300)
+
+# ---------------------------------------------------------------------------
 # core/sync/spike — the Fugue CRDT correctness spike (ADR-0002, SP-6 R-1..R-3).
 #
 # A separate executable, and the MOST isolated one in the tree: it links only
