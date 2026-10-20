@@ -1,6 +1,10 @@
 # Contributing & Development Workflow
 
-**Status:** Phase 0 draft
+**Status:** Phase 0 draft. Section 2 (Setup) was corrected 2026-10-20 to match the
+real build, which now exists; everything from section 3 onward describes the
+process this project is growing into as it gains contributors, not a claim
+about tooling that exists today — treat it as direction, not as documentation
+of a CI/PR pipeline that is already running.
 **Version:** 0.0.0
 **Date:** 2026-09-29
 
@@ -21,16 +25,36 @@
 
 ## 2. Setup
 
+The real build, as it exists today — no bootstrap script or CMake presets exist yet, so use
+plain CMake directly:
+
 ```bash
-./tools/bootstrap.sh                       # toolchains, git hooks, LFS, fixtures
-cmake --preset host-debug
-cmake --build --preset host-debug -j
-ctest --preset host-debug
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j
+ctest --test-dir build
 ```
 
-Target: ≤ 10 minutes on a clean machine. If it takes longer, that is a bug — file it.
+A clean checkout with none of the optional dependencies installed still configures, builds, and
+passes its full test suite. Three modules are optional and auto-detected (`AUTO`/`ON`/`OFF` via
+`-DUAPP_ENABLE_PDF`, `-DUAPP_ENABLE_CRYPTO`, `-DUAPP_ENABLE_OCR`) because each needs a real
+third-party dependency a fresh clone may not have:
 
-Platform builds: `./tools/build-android.sh`, `./tools/build-ios.sh`.
+```bash
+brew install libsodium tesseract        # macOS; or apt install libsodium-dev libtesseract-dev
+third_party/pdfium/fetch_pdfium.sh      # PDF viewing (prebuilt bootstrap, see its own README)
+```
+
+To also build under AddressSanitizer + UBSan (the sanitizer configuration every module in this
+project has been verified against before being committed):
+
+```bash
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DUAPP_ENABLE_SANITIZERS=ON
+cmake --build build-asan -j && ctest --test-dir build-asan
+```
+
+Target: well under 10 minutes on a clean machine for the default build. No Android/iOS build
+scripts exist yet — `core/capi`'s C99 ABI is what a future mobile binding would target, but no
+JNI or Swift layer has been written.
 
 ## 3. Workflow
 
@@ -164,9 +188,8 @@ A change is done when:
 
 ## 11. Reporting a security issue
 
-Do **not** open a public issue. Email the security contact listed in `SECURITY.md` (to be
-created in Phase 1). Include reproduction steps and affected versions. We acknowledge within
-2 business days.
+Do **not** open a public issue. See [`SECURITY.md`](../SECURITY.md) — use GitHub's private
+vulnerability reporting. Include reproduction steps and affected versions.
 
 ## 12. Communication norms
 

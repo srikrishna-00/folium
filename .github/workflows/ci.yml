@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Ubuntu: core + crypto + OCR. PDF is NOT fetched here on purpose —
+  # third_party/pdfium/fetch_pdfium.sh only vendors a mac-arm64 binary today
+  # (see third_party/pdfium/README.md), so UAPP_ENABLE_PDF=AUTO correctly
+  # detects it's absent and skips pdf-engine. This job exists specifically to
+  # prove that degradation is graceful, not to dodge testing PDF.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libsqlite3-dev libsodium-dev \
+            libtesseract-dev libleptonica-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # macOS: core + crypto + OCR + PDF (the vendored bootstrap binary is
+  # mac-arm64 only, so this is the one job that exercises pdf-engine).
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install libsodium tesseract
+
+      - name: Vendor PDFium (prebuilt bootstrap — see third_party/pdfium/README.md)
+        run: third_party/pdfium/fetch_pdfium.sh
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # A build with no optional dependencies installed at all — the "fresh
+  # clone, nothing pre-installed" case the README promises stays green.
+  minimal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install only the required dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libsqlite3-dev
+
+      - name: Configure (PDF/crypto/OCR all absent, all AUTO)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # A from-scratch Debug+ASan/UBSan build — the configuration every module in
+  # this project is verified against before being committed. Deliberately
+  # Ubuntu-only to keep CI time reasonable; macOS is covered for correctness
+  # by the job above, and the sanitizer build is what matters for memory
+  # safety specifically, which doesn't vary meaningfully by OS here.
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libsqlite3-dev libsodium-dev \
+            libtesseract-dev libleptonica-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DUAPP_ENABLE_SANITIZERS=ON
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

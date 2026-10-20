@@ -1,18 +1,29 @@
 cmake_minimum_required(VERSION 3.20)
 
 # ---------------------------------------------------------------------------
-# Universal AI Productivity Platform — native core build
+# Folium — native core build
 #
-# Phase 1: this file wires up the vertical slice
-#   CREATE NOTE -> STORE LOCALLY -> SEARCH NOTE -> OPEN NOTE -> EDIT -> SAVE
-# (spec section 40, "FIRST TASK"), the block document model that supersedes it
-# (spec section 14), and file-engine/detection (spec section 8/9). The
-# remaining monorepo directories (pdf-engine/, ocr/, scanner/, ai/, ...) are
-# still empty Phase 0 skeletons and are deliberately NOT added here yet.
+# NAMING, recorded here because a public reader will ask: the CMake project
+# name, the C++ namespace (`uapp::`) and the C ABI prefix (`UAPP_*`) are all
+# "uapp" — the project's internal engineering codename from before it had a
+# public name. "Folium" is the product/repository brand (see the root
+# README.md and the logo in docs/assets/). The two are deliberately NOT
+# unified: core/capi is a versioned, frozen C99 ABI that several commits'
+# worth of work has gone into keeping stable (see docs/adr/0003 and every
+# ABI-version-bump commit in docs/changelog.md) — a project-wide find/replace
+# of `uapp` -> `folium` would touch that frozen surface for zero functional
+# benefit and no user of the ABI asked for it. If this project ever does
+# rename its internals, that is its own ADR, not a side effect of branding.
+#
+# What this file actually builds: every module listed in README.md's
+# "What exists today" table — core/notes, core/blocks, core/search,
+# core/database, core/conversion, file-engine/detection, pdf-engine/reader,
+# ocr/engine, security/crypto, security/keys, ai/provider + ai/local, and
+# core/capi over all of them. See docs/changelog.md for the full, ordered
+# history of what each one does and does not do.
 #
 # Language level is C++17 per ADR-0001 ("Implement the core in C++17,
-# restricted to a disciplined subset, and export a pure C99 ABI"). The second
-# half of that sentence is now real: core/capi exports it.
+# restricted to a disciplined subset, and export a pure C99 ABI").
 #
 # C is enabled as a first-class language, not because any production code is
 # written in C — none is — but because core/capi's whole promise is that its
@@ -22,7 +33,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(uapp
     VERSION 0.0.1
-    DESCRIPTION "AI-Native Universal Productivity, Document, PDF, Scanner & File Platform"
+    DESCRIPTION "Folium — an AI-native document, knowledge, and file engine"
     LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)

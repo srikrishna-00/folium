@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Folium logo">
+  <title>Folium</title>
+  <defs>
+    <linearGradient id="foliumPage" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1B4332"/>
+      <stop offset="100%" stop-color="#2D6A4F"/>
+    </linearGradient>
+  </defs>
+
+  <!-- the page: a rounded square with a folded top-right corner -->
+  <path
+    d="M 40 24
+       H 176
+       L 232 80
+       V 216
+       Q 232 232 216 232
+       H 56
+       Q 40 232 40 216
+       V 40
+       Q 40 24 56 24
+       Z"
+    fill="url(#foliumPage)"/>
+
+  <!-- the fold itself, a lighter triangle -->
+  <path d="M 176 24 L 232 80 L 176 80 Z" fill="#52B788" opacity="0.9"/>
+
+  <!-- the leaf: a single vesica shape, stem at the base of the page -->
+  <path
+    d="M 136 196
+       C 100 188 78 156 82 116
+       C 86 76 118 52 150 56
+       C 148 96 146 136 144 168
+       C 142 180 140 190 136 196
+       Z"
+    fill="#D8F3DC"/>
+
+  <!-- the leaf's central vein -->
+  <path
+    d="M 146 60 C 140 96 137 140 134 192"
+    fill="none" stroke="#1B4332" stroke-width="3.5" stroke-linecap="round"/>
+
+  <!-- two side veins, branching -->
+  <path
+    d="M 141 92 L 112 80"
+    fill="none" stroke="#1B4332" stroke-width="2.5" stroke-linecap="round"/>
+  <path
+    d="M 138 130 L 104 124"
+    fill="none" stroke="#1B4332" stroke-width="2.5" stroke-linecap="round"/>
+</svg>
