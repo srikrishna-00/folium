@@ -511,7 +511,7 @@ the URK or a wrapped URK; and whether option B is committed for v1.1 (which woul
 v1.0 data model, because the escrow record's shape must exist from the start to avoid a
 migration).
 
-> **PARTIALLY ADDRESSED 2026-10-20, and one piece of it is FLAGGED FOR PRODUCT SIGN-OFF.**
+> **PARTIALLY ADDRESSED 2026-10-20; the sign-off below was given 2026-10-20.**
 >
 > **What this section's position means in code.** `security/keys` implements position 1 as
 > **the** recovery path and it stores nothing: `derive_user_root_key(recovery_secret)` is
@@ -529,16 +529,21 @@ migration).
 > downgrade rewrite is an authentication failure). It is also the shape **option B's** escrow
 > record would need from day one to avoid the migration this section warns about.
 >
-> **This is an ADDITIONAL path, not a second root of trust, and it must not ship as one
-> without sign-off.** Argon2id at `MobileInteractive` over a user-chosen passphrase is not the
-> ~256 bits a generated phrase carries, and §5's own `memlimit` correction was accepted
-> *because* the passphrase is not the only defence — using this record as a primary recovery
-> method would retroactively invalidate that argument. It is implemented because the record
-> format must exist before the data model freezes, not because the policy question is settled.
-> **If the answer is no, two functions and one record type delete cleanly** and the rest of the
-> hierarchy is unaffected. Same treatment, and the same reason, as the
-> `crypto_box_seal`-vs-`crypto_kx` resolution in §5A.2: a divergence between a written design
-> and shipped code gets flagged where both are read, not quietly reconciled in one of them.
+> **This is an ADDITIONAL path, not a second root of trust, and it does not ship as one.**
+> Argon2id at `MobileInteractive` over a user-chosen passphrase is not the ~256 bits a
+> generated phrase carries, and §5's own `memlimit` correction was accepted *because* the
+> passphrase is not the only defence — using this record as a primary recovery method would
+> retroactively invalidate that argument.
+>
+> **Decision (product-owner sign-off 2026-10-20): keep this as record-format infrastructure
+> only; do not commit to shipping it as a recovery path yet.** The policy question — whether
+> option B (or any platform-keychain-under-passphrase escrow) is pursued for v1.1 — remains
+> genuinely open and is **not** decided by this code existing. What this resolves is narrower:
+> the record format exists now, before the data model freezes, so that *if* the answer is
+> later yes, it is not a migration across every user's keys (the exact failure mode §5A.4's
+> closing paragraph warns about). If the eventual answer is no, `PassphraseWrappedUrkRecord`
+> and its two functions delete cleanly with no effect on the rest of the hierarchy — nothing
+> else in `security/keys` depends on it. Revisit when v1.1 scope is actually planned.
 
 ### 5A.5 What E2EE does **not** protect
 
