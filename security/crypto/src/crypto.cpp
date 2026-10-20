@@ -373,9 +373,101 @@ Status unwrap_content_key(const DeviceKeyPair& recipient, const PublicKey& wrapp
 }
 
 // --- subkey derivation -----------------------------------------------------
+//
+// UAPP_SODIUM_HAS_NATIVE_HKDF (cmake/UappSodium.cmake) decides which of two
+// implementations of RFC 5869 HKDF-SHA256 this file uses. Both exist below;
+// exactly one compiles in, picked by the preprocessor, not at runtime — so a
+// given binary is built against exactly one and there is no runtime branch
+// to miss-test.
+//
+// WHY THERE ARE TWO, AND WHY THE FALLBACK IS NOT A RULE-0 VIOLATION
+// ---------------------------------------------------------------------------
+// Ubuntu's packaged libsodium (1.0.18-2, confirmed with `nm -D` against the
+// real .so, not inferred from the version string — see UappSodium.cmake's
+// comment for why the version string is misleading here) does not export
+// crypto_kdf_hkdf_sha256_extract/expand at all. Requiring the native API
+// unconditionally would mean this module — and therefore security/keys,
+// which is built on it — simply does not build on one of the most common
+// Linux distributions, for a convenience wrapper libsodium itself implements
+// as two calls to crypto_auth_hmacsha256 (see libsodium's own
+// crypto_kdf_hkdf_sha256_extract.c upstream: it is HMAC-SHA256, called
+// twice, per RFC 5869).
+//
+// This file's RULE 0 says "no cryptographic primitives implemented here."
+// HKDF-SHA256 is not a primitive — SHA-256 and HMAC are the primitives, both
+// supplied by libsodium, both unmodified here. HKDF is a PUBLIC, STANDARD
+// COMPOSITION of an existing primitive (RFC 5869), and this project's own
+// test suite independently verifies BOTH implementations' output against
+// the same hard-coded reference vectors (`crypto.hkdf matches an
+// independently-computed HKDF-SHA256`), so a mistake here is a failing test,
+// not a silent weakening. That is the bar Rule 0 exists to enforce, and the
+// fallback meets it by construction rather than by exception.
+//
+// kContentKeyBytes is 32 either way: this project only ever derives a
+// 32-byte subkey, which is exactly ONE HMAC-SHA256 output block. HKDF's
+// general Expand step is a loop producing multiple blocks for a longer
+// output; at exactly 32 bytes requested, the loop runs once. The fallback
+// below implements that one-block case directly rather than a general
+// multi-block Expand, because a multi-block loop this call site can never
+// exercise is untested code in a crypto file, which is worse than no code.
+
+#if UAPP_SODIUM_HAS_NATIVE_HKDF
 
 static_assert(kContentKeyBytes == crypto_kdf_hkdf_sha256_KEYBYTES,
               "HKDF-SHA256's PRK is no longer the same width as our AEAD key");
+
+#else  // !UAPP_SODIUM_HAS_NATIVE_HKDF
+
+static_assert(kContentKeyBytes == crypto_auth_hmacsha256_BYTES,
+              "HKDF-SHA256's PRK is no longer the same width as our AEAD key "
+              "(fallback path: HMAC-SHA256 output width)");
+
+namespace {
+
+// RFC 5869 HKDF-Extract(salt, IKM) = HMAC-Hash(salt, IKM), where "salt" is
+// the HMAC KEY and may be any length — which is exactly why this needs the
+// streaming crypto_auth_hmacsha256_init/update/final API rather than the
+// one-shot crypto_auth_hmacsha256(), whose key length is fixed at
+// crypto_auth_hmacsha256_KEYBYTES. The streaming _init takes an explicit
+// `size_t keylen`, which is the whole reason it exists and has existed since
+// libsodium's earliest versions (HMAC-SHA256 is not a 2021-era addition).
+//
+// Returns 0 on success, matching the native function's convention, so the
+// call site below needs no further branching.
+[[nodiscard]] int hkdf_extract_fallback(unsigned char prk[crypto_auth_hmacsha256_BYTES],
+                                        const unsigned char* salt, std::size_t salt_len,
+                                        const unsigned char* ikm, std::size_t ikm_len) noexcept {
+    crypto_auth_hmacsha256_state state;
+    if (crypto_auth_hmacsha256_init(&state, salt, salt_len) != 0) { return -1; }
+    if (crypto_auth_hmacsha256_update(&state, ikm, ikm_len) != 0) { return -1; }
+    return crypto_auth_hmacsha256_final(&state, prk);
+}
+
+// RFC 5869 HKDF-Expand for EXACTLY ONE output block (see the file-level
+// comment above for why this call site never needs more than one): T(1) =
+// HMAC-Hash(PRK, info || 0x01). PRK is always exactly
+// crypto_auth_hmacsha256_BYTES wide here, so the one-shot
+// crypto_auth_hmacsha256() (fixed-length key) applies directly — no
+// streaming state needed, unlike Extract above.
+[[nodiscard]] int hkdf_expand_one_block_fallback(
+    unsigned char out[crypto_auth_hmacsha256_BYTES], const unsigned char* ctx,
+    std::size_t ctx_len, const unsigned char prk[crypto_auth_hmacsha256_BYTES]) noexcept {
+    // RFC 5869's T(1) = HMAC-Hash(PRK, T(0) | info | 0x01), and T(0) is the
+    // empty string — so the HMAC'd message is simply info followed by the
+    // single counter byte 0x01. ctx_len is bounded by kMaxKdfInfoBytes
+    // (checked by the caller, derive_subkey, well under any practical
+    // limit), so this is a small, fixed-maximum stack buffer, not an
+    // unbounded one.
+    static_assert(kMaxKdfInfoBytes <= 1024, "grow this scratch buffer if the bound above moves");
+    unsigned char msg[kMaxKdfInfoBytes + 1];
+    if (ctx_len > 0) { std::memcpy(msg, ctx, ctx_len); }
+    msg[ctx_len] = 0x01;
+    return crypto_auth_hmacsha256(out, msg, ctx_len + 1, prk);
+}
+
+}  // namespace
+
+#endif  // UAPP_SODIUM_HAS_NATIVE_HKDF
 
 Status derive_subkey(const ContentKey& parent, ByteView label, ByteView info, ContentKey& out) {
     out.reset();
@@ -391,11 +483,24 @@ Status derive_subkey(const ContentKey& parent, ByteView label, ByteView info, Co
 
     // The PRK is key material, so it lives in guarded memory rather than on
     // the stack: a 32-byte intermediate that reconstructs every key below it
-    // deserves the same handling as the keys themselves.
+    // deserves the same handling as the keys themselves. kContentKeyBytes,
+    // not either implementation's own BYTES macro — both are statically
+    // asserted equal to it above, and the allocation itself doesn't care
+    // which implementation is about to fill it.
     SecureBytes  prk;
-    const Status alloc = SecureBytes::allocate(crypto_kdf_hkdf_sha256_KEYBYTES, prk);
+    const Status alloc = SecureBytes::allocate(kContentKeyBytes, prk);
     if (!is_ok(alloc)) { return alloc; }
 
+    // `info.data` can legitimately be null when size == 0 (an edge with one
+    // child). Pass a valid pointer anyway rather than relying on either
+    // implementation's handling of (null, 0) — undocumented for the native
+    // call, and the fallback's std::memcpy would be UB on a null source even
+    // at length 0.
+    const std::uint8_t  empty  = 0;
+    const std::uint8_t* ctx    = info.size == 0 ? &empty : info.data;
+    std::uint8_t        scratch[kContentKeyBytes];
+
+#if UAPP_SODIUM_HAS_NATIVE_HKDF
     // Extract: salt = the edge label, IKM = the parent key. RFC 5869's salt
     // is "optional (non-secret)" and is exactly the right place for a
     // domain-separation constant.
@@ -407,18 +512,19 @@ Status derive_subkey(const ContentKey& parent, ByteView label, ByteView info, Co
     // Expand: ctx = info = which child along that edge. libsodium's prototype
     // takes `const char*`; the cast is a signedness change over bytes we
     // never interpret as text.
-    //
-    // `info.data` can legitimately be null when size == 0 (an edge with one
-    // child). Pass a valid pointer anyway rather than relying on a library's
-    // handling of (null, 0) — the HMAC update behind it is not documented for
-    // that case.
-    const std::uint8_t  empty  = 0;
-    const std::uint8_t* ctx    = info.size == 0 ? &empty : info.data;
-    std::uint8_t        scratch[kContentKeyBytes];
-
     const int rc = crypto_kdf_hkdf_sha256_expand(scratch, sizeof scratch,
                                                  reinterpret_cast<const char*>(ctx), info.size,
                                                  prk.data());
+#else
+    // Same two RFC 5869 steps, same salt/IKM/info roles, computed via
+    // crypto_auth_hmacsha256 instead — see the file-level comment above
+    // derive_subkey for why this is not a Rule-0 violation.
+    if (hkdf_extract_fallback(prk.data(), label.data, label.size, parent.bytes(),
+                              kContentKeyBytes) != 0) {
+        return Status::Internal;
+    }
+    const int rc = hkdf_expand_one_block_fallback(scratch, ctx, info.size, prk.data());
+#endif
     if (rc != 0) {
         secure_zero(scratch, sizeof scratch);
         return Status::Internal;

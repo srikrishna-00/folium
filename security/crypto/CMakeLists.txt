@@ -41,6 +41,17 @@ target_link_libraries(uapp_security_crypto
     PUBLIC  uapp::core_common
     PRIVATE uapp::sodium uapp::compiler_options)
 
+# UAPP_SODIUM_HAS_NATIVE_HKDF comes from cmake/UappSodium.cmake's
+# check_symbol_exists probe against the ACTUAL linked libsodium, not from its
+# version string — see that file's comment for why the version string lies
+# on at least one real, common platform (Ubuntu's packaged 1.0.18-2). PRIVATE
+# because only crypto.cpp branches on it.
+if(UAPP_SODIUM_HAS_NATIVE_HKDF)
+    target_compile_definitions(uapp_security_crypto PRIVATE UAPP_SODIUM_HAS_NATIVE_HKDF=1)
+else()
+    target_compile_definitions(uapp_security_crypto PRIVATE UAPP_SODIUM_HAS_NATIVE_HKDF=0)
+endif()
+
 # Guard rails, enforced by the link line rather than by review:
 #
 #  * NO uapp::core_blocks, NO uapp::core_database, NO uapp::storage_sqlite.

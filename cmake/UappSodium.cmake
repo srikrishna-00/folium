@@ -111,6 +111,32 @@ if(UAPP_SODIUM_VERSION STREQUAL "unknown" AND EXISTS "${UAPP_SODIUM_INCLUDE_DIR}
     endif()
 endif()
 
+# --- does THIS libsodium export the native HKDF-SHA256 convenience API? ----
+# Found the hard way, on a real CI run rather than guessed: Ubuntu's packaged
+# libsodium (1.0.18-2, the Debian/Ubuntu LTS build as of this writing — a
+# version string that *looks* new enough going by libsodium.org's own "added
+# in 1.0.18" changelog note) does NOT export crypto_kdf_hkdf_sha256_extract
+# or crypto_kdf_hkdf_sha256_expand — confirmed with `nm -D` against the real
+# .so inside an `ubuntu:latest` container, not inferred from the version
+# number alone. So "is the version new enough" is the wrong question; "does
+# the symbol exist" is the one this actually checks.
+#
+# security/crypto/src/crypto.cpp branches on UAPP_SODIUM_HAS_NATIVE_HKDF: the
+# native libsodium functions when this is true, and a from-scratch RFC 5869
+# HKDF-SHA256 built on crypto_auth_hmacsha256's streaming API (confirmed
+# present in that SAME old Ubuntu build — HMAC-SHA256 has shipped since
+# libsodium's earliest versions) when it is false. See that file for why this
+# is not a Rule-0 violation: it composes two already-vetted libsodium HMAC
+# calls per a public RFC, it does not invent a primitive, and its output is
+# verified byte-for-byte against the same hard-coded reference vectors
+# tests/crypto already checks the native path against.
+include(CheckSymbolExists)
+set(CMAKE_REQUIRED_INCLUDES "${UAPP_SODIUM_INCLUDE_DIR}")
+set(CMAKE_REQUIRED_LIBRARIES "${UAPP_SODIUM_LIBRARY}")
+check_symbol_exists(crypto_kdf_hkdf_sha256_extract "sodium.h" UAPP_SODIUM_HAS_NATIVE_HKDF)
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_REQUIRED_LIBRARIES)
+
 add_library(uapp_sodium UNKNOWN IMPORTED GLOBAL)
 add_library(uapp::sodium ALIAS uapp_sodium)
 
