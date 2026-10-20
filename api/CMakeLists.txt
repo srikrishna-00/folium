@@ -25,18 +25,27 @@ target_link_libraries(uapp_server_transport
     PRIVATE uapp::httplib
             uapp::compiler_options_exceptions_ok)
 
-# uapp_server_routes holds the actual route handlers (routes_health.cpp now,
-# routes_notes.cpp/routes_blocks.cpp/... in later milestones), kept as its
-# own target so tests/api/health_test.cpp can link it and call a handler
-# directly without a listening socket — "a unit test calls the handler
-# directly" per the plan's M1 verification step. Normal strict posture:
-# these files only ever see transport/http_server.h's plain types, never
-# httplib.h.
+# uapp_server_routes holds the actual route handlers plus the shared
+# server-side state and helpers (app_state, status_to_http, auth,
+# json_helpers), kept as its own target so tests/api/*.cpp can link it and
+# call a handler directly without a listening socket — "a unit test calls
+# the handler directly" per the plan's M1 verification step. Normal strict
+# posture: these files only ever see transport/http_server.h's plain
+# types, never httplib.h.
 add_library(uapp_server_routes STATIC
-    src/routes_health.cpp)
+    src/app_state.cpp
+    src/auth.cpp
+    src/json_helpers.cpp
+    src/status_to_http.cpp
+    src/routes_health.cpp
+    src/routes_notes.cpp
+    src/routes_search.cpp
+    src/routes_file.cpp)
 
 target_link_libraries(uapp_server_routes
     PUBLIC  uapp_server_transport
+            uapp::capi
+            uapp::json
     PRIVATE uapp::compiler_options)
 
 # uapp_server itself stays on the project's normal, strict posture

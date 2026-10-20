@@ -31,6 +31,11 @@ struct Request {
     std::vector<std::pair<std::string, std::string>> query;    // already-decoded ?key=value pairs
     std::vector<std::pair<std::string, std::string>> headers;
 
+    // Positional regex capture groups from the route PATTERN a handler was
+    // registered under (e.g. "/notes/([0-9a-f]{32})" captures the id as
+    // path_params[0]). Empty for a route with no capture groups.
+    std::vector<std::string> path_params;
+
     // Looks up a header case-insensitively; returns an empty string if
     // absent, matching the rest of this project's "absence is not an
     // error" convention for optional metadata.
@@ -51,10 +56,10 @@ struct Response {
 
 using Handler = std::function<void(const Request&, Response&)>;
 
-// A thin, growable route table. Paths registered here are matched
-// EXACTLY (no wildcards, no regex capture groups) — M1 only needs
-// `/healthz`; path-parameter routes (`/notes/:id`) are added when M3
-// actually needs them, not speculatively here.
+// A thin, growable route table. `path` is a regex PATTERN, matched against
+// the whole request path (httplib's own routing semantics) — a literal
+// string like "/healthz" matches itself exactly, and a pattern with capture
+// groups like "/notes/([0-9a-f]{32})" populates Request::path_params.
 class HttpServer {
 public:
     HttpServer();
@@ -65,6 +70,19 @@ public:
 
     void get(const std::string& path, Handler handler);
     void post(const std::string& path, Handler handler);
+    void put(const std::string& path, Handler handler);
+    void patch(const std::string& path, Handler handler);
+    void del(const std::string& path, Handler handler);
+
+    // Runs before every route handler, for every request, in registration
+    // order. A pre-route hook returns true to let the request continue to
+    // its matched route (or to 404 if none matches), or false after already
+    // writing a complete response into `res` (e.g. 401 Unauthorized) — the
+    // handler for the matched route is then never called. Used for the
+    // shared-secret bearer-token check, which must run before any route's
+    // business logic, not duplicated into every handler.
+    using PreRouteHook = std::function<bool(const Request&, Response&)>;
+    void set_pre_route_hook(PreRouteHook hook);
 
     // Blocks serving until stop() is called from another thread, or the
     // process is signalled. Returns false if the listen socket could not

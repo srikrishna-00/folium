@@ -22,6 +22,14 @@ Testing/
 *.db-wal
 *.db-shm
 
+# Local runtime artefacts produced by running uapp-server (api/) directly
+# out of a checkout — its default --db/--token-file paths are relative to
+# the current directory, so a local run drops these at the repo root.
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+uapp-server-token.txt
+
 # Editor / OS
 .vscode/
 .idea/

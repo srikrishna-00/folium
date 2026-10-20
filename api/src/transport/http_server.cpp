@@ -48,6 +48,13 @@ Request to_request(const httplib::Request& req) {
     for (const auto& [key, value] : req.headers) {
         out.headers.emplace_back(key, value);
     }
+    // req.matches[0] is the whole match; capture groups start at [1].
+    if (req.matches.size() > 1) {
+        out.path_params.reserve(req.matches.size() - 1);
+        for (std::size_t i = 1; i < req.matches.size(); ++i) {
+            out.path_params.emplace_back(req.matches[i].str());
+        }
+    }
     return out;
 }
 
@@ -97,6 +104,50 @@ void HttpServer::post(const std::string& path, Handler handler) {
                                                         httplib::Response& res) {
         dispatch(h, req, res);
     });
+}
+
+void HttpServer::put(const std::string& path, Handler handler) {
+    impl_->server.Put(path, [h = std::move(handler)](const httplib::Request& req,
+                                                       httplib::Response& res) {
+        dispatch(h, req, res);
+    });
+}
+
+void HttpServer::patch(const std::string& path, Handler handler) {
+    impl_->server.Patch(path, [h = std::move(handler)](const httplib::Request& req,
+                                                         httplib::Response& res) {
+        dispatch(h, req, res);
+    });
+}
+
+void HttpServer::del(const std::string& path, Handler handler) {
+    impl_->server.Delete(path, [h = std::move(handler)](const httplib::Request& req,
+                                                          httplib::Response& res) {
+        dispatch(h, req, res);
+    });
+}
+
+void HttpServer::set_pre_route_hook(PreRouteHook hook) {
+    impl_->server.set_pre_routing_handler(
+        [h = std::move(hook)](const httplib::Request& req,
+                              httplib::Response& res) -> httplib::Server::HandlerResponse {
+            Response out;
+            bool     continue_routing = true;
+            try {
+                continue_routing = h(to_request(req), out);
+            } catch (...) {
+                out.status       = 500;
+                out.content_type = "application/json";
+                out.body = R"({"error":{"code":"INTERNAL","message":"unhandled exception in pre-route hook"}})";
+                continue_routing = false;
+            }
+            if (continue_routing) {
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
+            res.status = out.status;
+            res.set_content(out.body, out.content_type.c_str());
+            return httplib::Server::HandlerResponse::Handled;
+        });
 }
 
 bool HttpServer::listen(const std::string& host, std::uint16_t port) {
