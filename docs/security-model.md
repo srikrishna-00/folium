@@ -306,34 +306,35 @@ The server mediates but cannot read. Three mechanisms, in preference order:
 keypair in the Keystore/Enclave and displays its public key as a QR code plus a short
 numeric code. An **already-enrolled device** scans it, verifies the short code out-of-band
 (the user reads it aloud / compares on screen — this is the step that defeats a
-server-substituted key), seals the workspace keys to the new device's public key
-(`crypto_box_seal`), and uploads the sealed bundle. The server stores and forwards opaque
-bytes.
+server-substituted key), wraps the workspace keys to the new device's public key using an
+**authenticated** key-wrap (see the resolution below), and uploads the wrapped bundle. The
+server stores and forwards opaque bytes.
 
 > The out-of-band short-code comparison is **not optional**. Without it, a malicious server
 > substitutes its own public key for the new device's and receives the workspace keys. This
 > is the single most important user-facing step in the whole E2EE design, and it is the one
 > most likely to be cut for onboarding-funnel reasons. **It must not be.**
 
-> **OPEN DESIGN QUESTION raised 2026-10-17 (`spikes/SP-9-findings.md` §7 F-5): does this
-> wrap need to authenticate the SENDER?**
+> **RESOLVED 2026-10-20 (raised 2026-10-17, `spikes/SP-9-findings.md` §7 F-5): the wrap
+> authenticates the sender. `crypto_box_seal` is NOT used here.**
 >
-> The `crypto_box_seal` named above uses an **ephemeral** sender keypair, so it authenticates
-> **nobody** — the new device learns only that *someone* holding its public key sealed the
-> bundle. That is a real property (it gives the sender anonymity), but this document does not
-> say it was chosen deliberately, and T-305 is "a malicious/compromised device pushes poisoned
-> sync data", which an unauthenticated key-wrap channel is a way to do.
+> `crypto_box_seal` uses an **ephemeral** sender keypair, so it authenticates **nobody** — the
+> new device would only learn that *someone* holding its public key sealed the bundle. That is
+> a real property (sender anonymity) but not the one this step needs: T-305 is "a malicious/
+> compromised device pushes poisoned sync data," and an unauthenticated key-wrap channel is a
+> way to do exactly that during enrolment.
 >
-> `security/crypto`'s `wrap_content_key()` therefore implements the **authenticated** variant:
-> `crypto_kx` (X25519 + BLAKE2b over *both* static public keys) deriving a directional KEK,
-> then XChaCha20-Poly1305 over the key being wrapped, with both public keys bound into the
-> AAD. The recipient can tell which device sealed it, and the rx/tx split means a wrapped key
-> cannot be replayed back at its sender. It gives up anonymity.
->
-> **A human must decide which property enrolment wants.** If both are wanted in different
-> places, the anonymous `crypto_box_seal` form is an **additional** function, never a
-> replacement — the two have different security properties and picking one by accident is how
-> protocols break.
+> **Decision (product-owner sign-off 2026-10-20): `security/crypto`'s `wrap_content_key()`
+> implements the authenticated `crypto_kx` variant** (X25519 + BLAKE2b over *both* static
+> public keys, deriving a directional KEK, then XChaCha20-Poly1305 over the key being wrapped
+> with both public keys bound into the AAD). The recipient can tell which device sealed it, and
+> the rx/tx split means a wrapped key cannot be replayed back at its sender. This gives up
+> sender anonymity, which enrolment does not need — every device belongs to the same user, and
+> knowing *which* of the user's own devices sealed a bundle is a feature (it is exactly what an
+> audit log of enrolment events wants), not a leak. If an anonymous-sender primitive is ever
+> needed elsewhere in this design, `crypto_box_seal` is an **additional** function for that
+> specific case, never a silent substitute for this one — the two have different security
+> properties and picking one by accident is how protocols break.
 >
 > Separately, and asserted in `tests/crypto` so it cannot be forgotten: libsodium rejects a
 > peer X25519 public key only when the agreement output is all-zero (the small-order
