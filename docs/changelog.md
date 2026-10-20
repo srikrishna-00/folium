@@ -12,6 +12,150 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `security/keys`: the E2EE key hierarchy (`security-model.md` §5A.1, ADR-0002 decision 1)
+
+The layer directly above `security/crypto`: **the relationships between keys, and nothing
+else.** Recovery Secret → User Root Key → Workspace Key → per-document key, plus the
+wrapped-key record format that carries a key from one device to another. It implements no
+cryptography — every operation is a call into `security/crypto` — and the build graph enforces
+that rather than a review: `uapp::sodium` appears **nowhere** on this module's link line, not
+even PRIVATE. `nm -u build/security/keys/libuapp_security_keys.a | grep -cE
+'_(crypto|sodium|randombytes)'` → **0**, and the only symbols it imports from below are eleven
+`uapp::crypto` entry points. This is the first real test of whether the primitives layer's
+PRIVATE libsodium boundary holds for production code rather than for a test binary; it does.
+
+**Per-document keys are DERIVED, not stored, and this was not a judgment call.** §5A.1 settles
+it in a sentence written to pre-empt the question: *"Per-document keys are derived, not stored.
+`HKDF(WSK, doc_id)` means one wrapped key per workspace, not one per document. Selective
+sharing of a single document requires wrapping that derived key separately — which is why
+document-level sharing to a non-workspace-member is out of scope at v1.0 (§5A.6)."* So
+`derive_document_key()` is a pure function of `(WSK, document_id)` with **no record, no row and
+no storage**, and there is deliberately no `KeyRole::Document` — a record role for a key that
+is never wrapped would name a record type that must not exist. The consequences are the
+design's and are documented at the point of use rather than discovered later: one wrapped-key
+record per workspace regardless of document count; **no per-document rotation or revocation**
+(rotation is a WSK-level event, §5A.3); losing the WSK loses the whole workspace; and two
+devices holding the WSK compute byte-identical document keys with no exchange, which is what
+makes multi-device sync and post-revocation catch-up work at all. Revisiting the trade is an
+ADR plus a `kRecordFormatVersion` bump, not a quiet change.
+
+**HKDF, and a deliberate change from what `crypto.h` predicted — flagged, not absorbed.**
+`crypto.h`'s NOT IMPLEMENTED item 1 said `crypto_kdf_derive_from_key` was the primitive
+`HKDF(WSK, doc_id)` would use, and that it would be wrapped once a hierarchy existed to use it.
+The hierarchy now exists, so `crypto::derive_subkey()` lands — but on
+**`crypto_kdf_hkdf_sha256`** (RFC 5869, libsodium ≥ 1.0.19), not on
+`crypto_kdf_derive_from_key`. Reason: the latter's context is a fixed **8 bytes** and its
+subkey selector is a **uint64**, while a `doc_id` in this codebase is a string. Hashing a
+string id down to a u64 to fit the API would introduce a collision domain — two documents
+sharing a key — that the written design does not have, to save nothing. §5A.1 literally says
+HKDF, so this is the construction the design names. Extract-then-expand, with the **label as
+the salt** (one versioned compile-time constant per edge of the hierarchy) and the **id as the
+info**: swapping those two would make every URK→WSK key collide with every WSK→document key
+sharing an id. An empty label is rejected outright, because an unlabelled derivation is how two
+edges produce the same key from the same parent.
+
+**Recovery: the doc's path is canonical, the passphrase path is additional and is FLAGGED FOR
+REVIEW.** §5A.1 roots the URK in a *generated* 32-byte recovery secret (~256 bits, shown once
+as 24 words) reached by HKDF, and §5A.4 is emphatic that recovery does **not** rest on a
+user-chosen passphrase — §5's Argon2id correction explicitly leans on that to justify the
+64 MiB `memlimit`. So `derive_user_root_key(recovery_secret)` is **the** recovery path and
+stores **nothing**: a new device with the 24 words re-derives the URK and unwraps the workspace
+key from the server-stored record, which is §5A.2 mechanism (2) exactly. Separately,
+`wrap_urk_under_passphrase()` implements an **optional, additional** Argon2id-wrapped URK
+record — the shape §5A.4's open design item ("whether the platform-keychain copy stores the URK
+or a wrapped URK") needs in order to store a wrapped URK, and the shape a §5A.4 option B
+PIN/enclave escrow record would have to have from day one to avoid a migration. **It must not
+be presented to a user as equivalent to the phrase**, and whether it ships at all is a product
+decision, not an engineering one: Argon2id at MobileInteractive over whatever a human typed is
+not ~256 bits. It is implemented because the record format must exist before the data model
+freezes; if the answer is "no", two functions and one record type delete cleanly and the
+hierarchy above is unaffected. Flagged in `key_hierarchy.h`, in `security-model.md` §5A.1 and
+§5A.4, and here — the same treatment as the `crypto_box_seal`-vs-`crypto_kx` resolution.
+
+**The record format, and the one place it is not fully authenticated — stated, not hidden.**
+Three fixed-size, heap-free record types, one per edge that needs storage:
+`DeviceWrappedUrkRecord` (the §5A.1 "DEVICE KEY BUNDLE", one per enrolled device),
+`PassphraseWrappedUrkRecord`, and `UrkWrappedWorkspaceKeyRecord` (one per workspace). Workspace
+and document ids are **not fields**: an id is the record's identity in whatever table
+eventually holds it, and it is bound into the AAD so a record cannot be replayed into another
+workspace. Every record carries `format_version` and `role` as plaintext metadata, and **every
+unwrap takes the role the caller expects as a parameter and checks it** — nothing in this
+module decides what to do with a key by reading a field an attacker can edit. The passphrase
+and workspace records bind their whole header (version, role, wrap kind, salt, KDF profile,
+scope id) into the AEAD's AAD, so editing any byte is a `CryptoAuthFailed`; a
+**downgrade-the-KDF-profile rewrite is therefore an auth failure, which is asserted in the
+suite.** `DeviceWrappedUrkRecord` **cannot** do that, because `crypto::wrap_content_key()`
+takes no AAD parameter — its AAD is fixed at `wrapper_pub || recipient_pub` inside the
+primitive. What saves it is that nothing trusts those fields: the KEK is derived from the
+**caller-supplied** wrapper public key (from its trusted device list), never from the record's
+copy, so a bundle forged by anyone not holding an enrolled device's secret key fails to unwrap
+whatever its header claims, and a relabelled role is refused before any key material is
+touched. **Recommended follow-up, deliberately not done here:** an AAD-taking overload
+`wrap_content_key(wrapper, recipient_public, cek, aad, out)`, byte-compatible with today's
+format when the AAD is empty. That changes a committed, externally-vectored primitive and wants
+a crypto review of its own, not a drive-by edit from the layer above.
+
+**Tests — 13 new cases / 6 ctest entries for the hierarchy, plus 3 cases / 1 entry for HKDF.**
+`tests/crypto`'s published-vector argument does not transfer (this module implements no
+primitive, so there is no external vector for it to disagree with), so the cases are built
+around the four things that can actually go wrong one layer up: a wrong **edge**, a missing
+**binding**, lost **determinism**, and a failure that **leaks**. Concretely: every derived key
+is asserted distinct from every other key reachable from the same parent — including an
+edge-confusion case that derives both the document-key and workspace-wrap edges from one parent
+with one id and requires them to differ, which pins the labels as part of the stored format;
+every ciphertext is moved to a neighbouring id and must fail; **the full chain is driven on real
+content** (recovery phrase → URK → workspace record → document key → XChaCha20-Poly1305 →
+plaintext) and read back three ways — by a **second simulated device** enrolled via a real
+wrapped bundle, by the **recovery phrase alone** with no device present, and via the
+passphrase-wrapped URK — each asserting the second device derives a byte-identical document
+key with no exchange; and the sealed blob is searched for its own plaintext, because a wrapper
+that forgot to encrypt would pass every round-trip assertion in the file. Failure paths are
+exhaustive and assert the **out-parameter's state**, not just the code: a third device, a
+misattributed sender, an attacker-relabelled bundle, a wrong passphrase (including
+one-character-off), a tampered salt, a downgraded profile, every single byte of every wrapped
+key flipped, a stale post-rotation document key, a truncated blob, an empty id — all
+`CryptoAuthFailed` (or a metadata code) with the recovered buffer **empty**. `derive_subkey()`
+is additionally checked against an **independent HKDF-SHA256 implementation** which was itself
+first verified against **RFC 5869 Test Case 1**; the RFC's own vectors cannot be driven through
+this API (it fixes IKM and output at 32 bytes, the published cases use 22 and 42), so verifying
+a second implementation against the RFC and ourselves against it is the strongest available
+check — strictly more than a self-recorded golden, and it would catch a swapped label/info,
+SHA-512, a skipped extract step or a hashed NUL terminator.
+
+**Verified, with real output.** `cmake -S . -B build_keyslice -DCMAKE_BUILD_TYPE=Debug
+-DUAPP_ENABLE_CRYPTO=ON` → `100% tests passed out of 53` (46 before, +6 `uapp.keys.*`, +1
+`uapp.crypto.hkdf`); `uapp_keys_tests` → `13 passed, 0 failed`; `uapp_crypto_tests` → `30
+passed, 0 failed` (27 before). Debug + ASan/UBSan, same tree, same options: `100% tests passed
+out of 53`, 71.52 s vs 28.48 s unsanitised. `-Werror -fno-exceptions -fno-rtti` throughout, no
+warnings. Isolation re-measured: **0** libsodium imports in `libuapp_security_keys.a` and in
+all seven other first-party libraries, exactly **two** files in the tree `#include <sodium.h>`
+(both in `security/crypto`), and `security/crypto` now imports **17** libsodium calls — the
+previous 15 plus `crypto_kdf_hkdf_sha256_extract`/`_expand`.
+
+**NOT IMPLEMENTED** (listed in full in `key_hierarchy.h`): the **24-word phrase encoding and
+wordlist** (§5A.4 lists it as an unsettled pre-Phase-12 design item; this module's input is the
+32 bytes behind it, and a wordlist chosen here would be a wordlist chosen by accident);
+**URK-pub**, the published X25519 half of the URK (its only consumers are server-mediated
+enrolment and cross-account sharing, both out of scope, and it would need a
+`scalarmult_base` the primitives layer does not expose); **device enrolment** including the
+out-of-band short-code check — **without which this module's device wrap authenticates a KEY,
+not a DEVICE**, and §5A.2 calls that check "the single most important user-facing step in the
+whole E2EE design"; **WSK rotation and revocation** (§5A.3, a stateful multi-record
+re-encrypt-and-snapshot protocol over storage, not a function over keys); **persistence** — no
+SQLite, no tables, no byte-exact wire encoding, matching how `core/conversion`, `core/blocks`
+and `core/search` each landed their logic before their storage, and leaving where these records
+live (SQLCipher row, keychain item, opaque server blob) to the run that has those constraints
+in front of it; **per-blob keys** `HKDF(DocKey, blob_id)`, because the chunked-blob path that
+would consume them is itself NOT IMPLEMENTED and shipping the derivation now would be an unused
+API with a security-critical label — the same argument that kept `derive_subkey` out of the
+primitives layer until this module needed it; **key lifetime policy** and hardware-backed
+storage (`security/key-management` still does not exist); and **a C ABI**. The three new
+`Status` codes (`KeyRecordVersionUnsupported`, `KeyRecordRoleMismatch`, `KeyScopeIdInvalid`) are
+flattened to `UAPP_STATUS_UNEXPECTED` in `core/capi` on the existing argument. Note what is
+**not** among them: there is no code for "wrong device", "wrong passphrase" or "tampered
+record" — all three are `CryptoAuthFailed`, because a hierarchy that reported which of them
+happened would hand back the distinguisher the primitives layer refuses to give.
+
 ### Added — `security/crypto`: cryptographic primitives on libsodium (spec §23/§38, ADR-0002 decision 1)
 
 The foundation `adr/0002` decision 1 ("E2EE from v1.0") stands on, and **only** the

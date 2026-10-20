@@ -101,6 +101,13 @@ const char* status_code(Status s) noexcept {
             return "CRYPTO_SECURE_ALLOC_FAILED";
         case Status::CryptoPassphraseTooShort:
             return "CRYPTO_PASSPHRASE_TOO_SHORT";
+
+        case Status::KeyRecordVersionUnsupported:
+            return "KEY_RECORD_VERSION_UNSUPPORTED";
+        case Status::KeyRecordRoleMismatch:
+            return "KEY_RECORD_ROLE_MISMATCH";
+        case Status::KeyScopeIdInvalid:
+            return "KEY_SCOPE_ID_INVALID";
     }
     // Reached only if a caller casts a bogus integer into Status. We do not
     // trust that it cannot happen just because the enum is closed.
@@ -247,6 +254,13 @@ const char* status_message(Status s) noexcept {
             return "A guarded secure allocation for key material could not be made.";
         case Status::CryptoPassphraseTooShort:
             return "The passphrase is shorter than the minimum accepted length.";
+
+        case Status::KeyRecordVersionUnsupported:
+            return "This build cannot read that wrapped-key record format version.";
+        case Status::KeyRecordRoleMismatch:
+            return "That wrapped-key record holds a different kind of key than was requested.";
+        case Status::KeyScopeIdInvalid:
+            return "The workspace or document identifier is empty or too long.";
     }
     return "Unrecognised status code.";
 }

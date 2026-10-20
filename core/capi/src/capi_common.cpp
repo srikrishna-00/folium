@@ -298,6 +298,17 @@ uapp_status_t to_c_status(Status s) noexcept {
         case Status::CryptoKdfFailed:
         case Status::CryptoSecureAllocFailed:
         case Status::CryptoPassphraseTooShort:
+        // The key HIERARCHY layer's three codes (security/keys,
+        // security-model.md §5A.1) flatten here for exactly the same reason
+        // and under the same argument: there is no uapp_keys.h, and the
+        // shape of a C-ABI key handle is the open question that keeps it
+        // that way. Note that "wrong device", "wrong passphrase" and
+        // "tampered record" are NOT among them — they are CryptoAuthFailed
+        // above, and must stay one constant on the other side of any future
+        // boundary for the oracle reason stated there.
+        case Status::KeyRecordVersionUnsupported:
+        case Status::KeyRecordRoleMismatch:
+        case Status::KeyScopeIdInvalid:
             return UAPP_STATUS_UNEXPECTED;
     }
     // A code the core added and this layer has not been taught. We must not

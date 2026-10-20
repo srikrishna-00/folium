@@ -507,6 +507,17 @@ someone would otherwise assume it had been handled:
    primitive `HKDF(WSK, doc_id)` will use and it is not wrapped, because
    wrapping it without the hierarchy means shipping an unused API with a
    security-critical context string.
+
+   > **SUPERSEDED 2026-10-20.** The hierarchy landed in `security/keys`
+   > (changelog, `security-model.md` §5A.1) and the derivation primitive was
+   > wrapped with it — as **`crypto_kdf_hkdf_sha256`**, not
+   > `crypto_kdf_derive_from_key`: the latter's context is a fixed 8 bytes and
+   > its subkey selector a uint64, and a `doc_id` here is a string, so fitting
+   > it would have meant hashing ids into a u64 collision domain the written
+   > design does not have. The rest of this item's list — enrolment, rotation,
+   > revocation, persistence, the phrase encoding, URK-pub and per-blob keys —
+   > is still NOT IMPLEMENTED, now itemised in
+   > `security/keys/include/uapp/keys/key_hierarchy.h`.
 2. **Chunked blob encryption** (§5: 1 MiB chunks, deterministic nonce,
    AAD = `blob_id || chunk_index || total_chunks`). `seal()` takes AAD and
    that triple is its intended use; the chunking and index derivation are the

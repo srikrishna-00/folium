@@ -257,12 +257,22 @@ treated as an unresolved design item, not as a decision.
 >    content lands in the same place. §12 below covers supply chain and says nothing about
 >    export control; this is new risk **R-33** and it needs counsel, not engineering.
 >
-> **What exists in code today is the PRIMITIVES layer only** (`security/crypto`): key
-> generation, AEAD, key wrapping between two device keypairs, the passphrase KDF, and secure
-> memory. Everything else in this section — the hierarchy in §5A.1, the enrolment in §5A.2,
-> the rotation in §5A.3 — is **NOT IMPLEMENTED**. The header
-> `security/crypto/include/uapp/crypto/crypto.h` lists the gap item by item at the point
-> where a reader would otherwise assume it had been handled.
+> **What exists in code today** (updated 2026-10-20) is **two layers**:
+>
+> * `security/crypto` — the PRIMITIVES: key generation, AEAD, authenticated key wrapping
+>   between two device keypairs, HKDF-SHA256 subkey derivation, the passphrase KDF, and
+>   secure memory.
+> * `security/keys` — **the hierarchy in §5A.1**, i.e. Recovery Secret → URK → Workspace Key
+>   → derived per-document key, plus the wrapped-key record format. It links
+>   `security/crypto` and **not libsodium** (verified: zero libsodium symbols imported), so
+>   "all cryptography goes through `security/crypto`" is a property of the build graph one
+>   layer up as well as at the bottom.
+>
+> **The enrolment PROTOCOL in §5A.2 and the rotation/revocation in §5A.3 remain NOT
+> IMPLEMENTED**, as do the 24-word phrase encoding, URK-pub, per-blob keys, and any
+> persistence of the records. `security/keys/include/uapp/keys/key_hierarchy.h` and
+> `security/crypto/include/uapp/crypto/crypto.h` each list their gaps item by item, at the
+> point where a reader would otherwise assume they had been handled.
 
 ### 5A.1 Extended key hierarchy
 
@@ -297,6 +307,62 @@ Per device, as before (§5):
   non-workspace-member is **out of scope at v1.0** (§5A.6).
 - **The database key is local-only and unrelated to the URK.** Restoring a device backup
   therefore cannot resurrect a decryptable database (T-203 holds unchanged).
+
+> **IMPLEMENTED 2026-10-20 — `security/keys`, and three things this section needed to be
+> more specific about.** The hierarchy above is now code: `generate_recovery_secret()`,
+> `derive_user_root_key()`, `generate_workspace_key()`, `wrap_urk_for_device()`,
+> `unwrap_urk_from_device()`, `wrap_workspace_key()`, `unwrap_workspace_key()`,
+> `derive_document_key()` and the two content functions, with 13 cases over 6 ctest entries.
+> The module performs no cryptography of its own and is not linked against libsodium.
+>
+> **1. "Per-document keys are derived, not stored" was unambiguous and is implemented as
+> written.** `derive_document_key()` is a pure function of `(WSK, document_id)` — no record,
+> no row, no per-document wrapped key, and no `KeyRole::Document` in the record format,
+> because a role for a key that is never wrapped would name a record type that must not
+> exist. The price is restated here because it is permanent until an ADR changes it: there is
+> **no per-document rotation and no per-document revocation**; rotation is a WSK-level event
+> (§5A.3) that re-encrypts the workspace; and losing the WSK loses the workspace with no
+> per-document escape hatch. In exchange, a device that holds the WSK derives every document
+> key with no exchange and no storage, which is what makes §5A.2 mechanism (2) and
+> post-rotation catch-up work at all.
+>
+> **2. The HKDF is `crypto_kdf_hkdf_sha256`, not `crypto_kdf_derive_from_key`** — a change
+> from what `crypto.h` previously predicted, recorded rather than absorbed.
+> `crypto_kdf_derive_from_key` takes a fixed **8-byte** context and a **uint64** subkey id,
+> and a `doc_id` here is a string; hashing a string id into a u64 to fit that API would create
+> a collision domain — two documents sharing a key — that this section does not have, to save
+> nothing. This section says "HKDF", and RFC 5869 HKDF is what landed (libsodium ≥ 1.0.19).
+> The construction, which is now part of the stored format: `PRK = HKDF-Extract(salt = edge
+> label, IKM = parent key)`, then `HKDF-Expand(PRK, info = the child's id, 32)`. The label is a
+> versioned compile-time constant, one per edge (`uapp/keys/v1/user-root-key`,
+> `.../workspace-key-wrap`, `.../document-key`, `.../document-content`,
+> `.../passphrase-urk-wrap`). **Changing a label does not weaken a key; it silently makes
+> every existing workspace undecryptable.** Treat labels as stored format: a new label is a
+> new version segment plus a migration.
+>
+> **3. The record format, and one place it is not fully authenticated.** Three fixed-size
+> record types — `DeviceWrappedUrkRecord` (the "DEVICE KEY BUNDLE" above, one per enrolled
+> device), `PassphraseWrappedUrkRecord` (see §5A.4) and `UrkWrappedWorkspaceKeyRecord` (one per
+> workspace). Ids are not record fields: an id is a record's identity in storage and is bound
+> into the AAD, so a record cannot be replayed into another workspace or document. Every
+> record's `format_version` and `role` are plaintext metadata, and **every unwrap takes the
+> expected role as a parameter and checks it** — no code path decides what to do with a key by
+> believing a field an attacker can edit. The passphrase and workspace records bind their whole
+> header into the AEAD's AAD, so a tampered salt or a **downgraded KDF profile** is an
+> authentication failure (asserted in the suite). The device record **cannot**, because
+> `wrap_content_key()` takes no AAD parameter — its AAD is fixed at `wrapper_pub ||
+> recipient_pub` inside the primitive. It is safe because nothing trusts those fields: the KEK
+> is derived from the **caller-supplied** wrapper public key, taken from the caller's trusted
+> device list, so a forged bundle fails regardless of its header. **FOR REVIEW:** the clean fix
+> is an AAD-taking overload of `wrap_content_key()`, byte-compatible with today's format for an
+> empty AAD; it was deliberately not done in the same run, because it changes a committed
+> primitive that is pinned by external published vectors and deserves its own crypto review.
+>
+> **Persistence is NOT IMPLEMENTED and is deliberately not sketched.** These records are plain
+> structs; whether they live in a SQLCipher row, a keychain item or an opaque server blob is a
+> decision with constraints (§5A.2's "the server stores and forwards opaque bytes") that the
+> run which has them in front of it should make. `kRecordFormatVersion` is the hook a wire
+> encoding will need.
 
 ### 5A.2 Adding a device — the key exchange
 
@@ -444,6 +510,35 @@ questions): the exact phrase encoding and wordlist; whether the platform-keychai
 the URK or a wrapped URK; and whether option B is committed for v1.1 (which would change the
 v1.0 data model, because the escrow record's shape must exist from the start to avoid a
 migration).
+
+> **PARTIALLY ADDRESSED 2026-10-20, and one piece of it is FLAGGED FOR PRODUCT SIGN-OFF.**
+>
+> **What this section's position means in code.** `security/keys` implements position 1 as
+> **the** recovery path and it stores nothing: `derive_user_root_key(recovery_secret)` is
+> deterministic, so a new device holding only the 32 bytes behind the 24 words re-derives the
+> URK and unwraps the workspace key from the server-stored record with no other device present
+> — §5A.2 mechanism (2), verified end to end on real content in `uapp.keys.chain`. The phrase
+> **encoding and wordlist remain unsettled and unimplemented**; the module's input is the 32
+> bytes, deliberately, so that a wordlist is not chosen by accident by the layer below the
+> decision.
+>
+> **What is new, and what needs a decision.** The second design item above — "whether the
+> platform-keychain copy stores the URK or a wrapped URK" — needs a wrapped-URK record to be
+> answerable either way, so one exists: `PassphraseWrappedUrkRecord`, the URK sealed under an
+> **Argon2id-derived key** (profile and salt stored with it, both bound into the AAD, so a
+> downgrade rewrite is an authentication failure). It is also the shape **option B's** escrow
+> record would need from day one to avoid the migration this section warns about.
+>
+> **This is an ADDITIONAL path, not a second root of trust, and it must not ship as one
+> without sign-off.** Argon2id at `MobileInteractive` over a user-chosen passphrase is not the
+> ~256 bits a generated phrase carries, and §5's own `memlimit` correction was accepted
+> *because* the passphrase is not the only defence — using this record as a primary recovery
+> method would retroactively invalidate that argument. It is implemented because the record
+> format must exist before the data model freezes, not because the policy question is settled.
+> **If the answer is no, two functions and one record type delete cleanly** and the rest of the
+> hierarchy is unaffected. Same treatment, and the same reason, as the
+> `crypto_box_seal`-vs-`crypto_kx` resolution in §5A.2: a divergence between a written design
+> and shipped code gets flagged where both are read, not quietly reconciled in one of them.
 
 ### 5A.5 What E2EE does **not** protect
 

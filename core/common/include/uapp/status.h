@@ -171,6 +171,28 @@ enum class Status : std::int32_t {
     CryptoKdfFailed        = 1006,  ///< Argon2id could not run (almost always: out of memory)
     CryptoSecureAllocFailed = 1007, ///< sodium_malloc() refused — guarded pages exhausted
     CryptoPassphraseTooShort = 1008,///< passphrase below kMinPassphraseBytes
+
+    // --- key hierarchy (11xx) ----------------------------------------------
+    // security/keys — the key HIERARCHY layer (security-model.md §5A.1:
+    // Recovery Secret -> URK -> Workspace Key -> document key). It owns the
+    // RELATIONSHIPS between keys and the wrapped-key RECORD format. It owns
+    // no cryptography at all, which is why most of its failures are 10xx
+    // codes raised by security/crypto underneath it and only three are new.
+    //
+    // There is deliberately NO code here for "wrong device", "wrong
+    // passphrase" or "tampered record". All three are CryptoAuthFailed, for
+    // the oracle reason the 10xx block states: a hierarchy layer that
+    // reported *which* of them happened would hand back the distinguisher
+    // the primitives layer refuses to give. The three codes below are
+    // reachable only from checks made BEFORE any key material is touched,
+    // over fields that are plaintext metadata rather than secrets.
+    //
+    // Still NOT IMPLEMENTED, and therefore still codeless: device enrolment,
+    // the out-of-band short-code check, WSK rotation and revocation (§5A.2,
+    // §5A.3), and persistence of these records.
+    KeyRecordVersionUnsupported = 1100,  ///< wrapped-key record version this build cannot read
+    KeyRecordRoleMismatch       = 1101,  ///< record holds a different key role than was asked for
+    KeyScopeIdInvalid           = 1102,  ///< workspace/document id is empty, null, or over the cap
 };
 
 /// True iff the operation succeeded. Prefer `if (!uapp::is_ok(s))` over

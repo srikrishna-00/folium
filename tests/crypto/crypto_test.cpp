@@ -212,6 +212,39 @@ constexpr const char* kKdfGoldenMobileInteractive =
 constexpr const char* kKdfGoldenDesktopModerate =
     "aad608b5866cef907f47d5cae529ed01a91301c92c5d5fef46e1a65e394e5742";
 
+// --- cross-implementation vectors: HKDF-SHA256 -----------------------------
+//
+// STRONGER than the Argon2id goldens above and weaker than the two external
+// vectors at the top of this file, so it is worth being exact about what
+// these are. The expected values were produced by an INDEPENDENT
+// HKDF-SHA256 implementation (a ~10-line Python one over hashlib/hmac — not
+// libsodium, not this code), and that implementation was first checked
+// against RFC 5869's own Test Case 1 (salt 000102...0c, IKM 0x0b*22, info
+// f0f1...f9, L=42), which it reproduces byte for byte.
+//
+// RFC 5869's vectors cannot be driven through crypto::derive_subkey()
+// directly, for the same shape of reason RFC 9106's cannot be driven through
+// derive_key_from_passphrase(): this API fixes both the IKM and the output
+// at 32 bytes, while the published cases use a 22-byte IKM and a 42-byte
+// output. Verifying a second implementation against the RFC and then
+// ourselves against that implementation is the strongest thing available,
+// and it is strictly more than a self-recorded golden: a build that swapped
+// the label and the info, used SHA-512, skipped the extract step or hashed
+// the label's NUL terminator would disagree with these values.
+constexpr const char* kHkdfParent = "000102030405060708090a0b0c0d0e0f"
+                                    "101112131415161718191a1b1c1d1e1f";
+// label = "uapp/keys/v1/user-root-key", info = "" (the one-child edge)
+constexpr const char* kHkdfUserRootKey =
+    "b1f72154966ab04ef6418a60f2d94f3783fb87eefdaf08566d92e84a23790714";
+// label = "uapp/keys/v1/document-key", info = "page_0001"
+constexpr const char* kHkdfDocumentKey =
+    "4192c53bf10d6bbc04858e69b32877c32d66bcdc0b2ee6cbd00fabb441ddbf38";
+// label = "uapp/keys/v1/workspace-key-wrap", info = "page_0001" — the SAME
+// parent and the SAME info as the line above, differing only by label. The
+// two values must differ; that is the entire function of a label.
+constexpr const char* kHkdfWorkspaceWrap =
+    "7dbce2f7f187de9cf0a7ae1b780262f3b60fcf966ee3f1980fd03e169f3c9805";
+
 Salt salt_from_hex(const char* hex) {
     Salt                            s{};
     const std::vector<std::uint8_t> bytes = unhex(hex);
@@ -1199,4 +1232,155 @@ UAPP_TEST("crypto.memory moves transfer ownership exactly once") {
     UAPP_REQUIRE(moved_key.valid());
     UAPP_CHECK(uapp::crypto::secure_equal(moved_key.bytes(), copy.data(), kContentKeyBytes));
     uapp::crypto::secure_zero(copy.data(), copy.size());
+}
+
+// ===========================================================================
+// crypto.hkdf — subkey derivation (added 2026-10-20 with security/keys)
+// ===========================================================================
+
+UAPP_TEST("crypto.hkdf matches an independently-computed HKDF-SHA256") {
+    UAPP_REQUIRE(ensure_init());
+
+    ContentKey parent;
+    UAPP_REQUIRE(load_key(parent, unhex(kHkdfParent)));
+
+    struct Case final {
+        const char* label;
+        const char* info;
+        const char* expected;
+    };
+    const Case cases[] = {
+        {"uapp/keys/v1/user-root-key", "", kHkdfUserRootKey},
+        {"uapp/keys/v1/document-key", "page_0001", kHkdfDocumentKey},
+        {"uapp/keys/v1/workspace-key-wrap", "page_0001", kHkdfWorkspaceWrap},
+    };
+
+    for (const Case& c : cases) {
+        const std::string label_str(c.label);
+        const std::string info_str(c.info);
+
+        ContentKey derived;
+        UAPP_REQUIRE_OK(uapp::crypto::derive_subkey(parent, view(label_str), view(info_str),
+                                                    derived));
+        UAPP_REQUIRE(derived.valid());
+
+        const std::vector<std::uint8_t> expected = unhex(c.expected);
+        UAPP_REQUIRE(expected.size() == kContentKeyBytes);
+        UAPP_CHECK_MSG(
+            uapp::crypto::secure_equal(derived.bytes(), expected.data(), kContentKeyBytes),
+            std::string("derive_subkey disagrees with the reference for label ") + c.label);
+    }
+
+    // The two cases sharing a parent and an info must not share a key. If
+    // this ever fails, the label is not reaching the construction.
+    UAPP_CHECK(std::string(kHkdfDocumentKey) != std::string(kHkdfWorkspaceWrap));
+}
+
+UAPP_TEST("crypto.hkdf separates parent, label and info") {
+    UAPP_REQUIRE(ensure_init());
+
+    ContentKey parent_a;
+    ContentKey parent_b;
+    UAPP_REQUIRE_OK(uapp::crypto::generate_content_key(parent_a));
+    UAPP_REQUIRE_OK(uapp::crypto::generate_content_key(parent_b));
+
+    const std::string label_a("uapp/keys/v1/a");
+    const std::string label_b("uapp/keys/v1/b");
+    const std::string info_a("id-1");
+    const std::string info_b("id-2");
+
+    std::set<std::string> seen;
+    for (const ContentKey* p : {&parent_a, &parent_b}) {
+        for (const std::string* l : {&label_a, &label_b}) {
+            for (const std::string* i : {&info_a, &info_b}) {
+                ContentKey derived;
+                UAPP_REQUIRE_OK(uapp::crypto::derive_subkey(*p, view(*l), view(*i), derived));
+                seen.insert(
+                    std::string(reinterpret_cast<const char*>(derived.bytes()),
+                                kContentKeyBytes));
+            }
+        }
+    }
+    UAPP_CHECK_MSG(seen.size() == 8u,
+                   "all three of parent, label and info must affect the derived key");
+
+    // Deterministic: the same inputs twice, in the same process, give the
+    // same key. (The cross-implementation vectors above are what prove it
+    // across processes, builds and machines.)
+    ContentKey first;
+    ContentKey second;
+    UAPP_REQUIRE_OK(uapp::crypto::derive_subkey(parent_a, view(label_a), view(info_a), first));
+    UAPP_REQUIRE_OK(uapp::crypto::derive_subkey(parent_a, view(label_a), view(info_a), second));
+    UAPP_CHECK(uapp::crypto::secure_equal(first.bytes(), second.bytes(), kContentKeyBytes));
+
+    // A subkey must not equal its parent — i.e. this is a derivation and not
+    // a copy with extra steps.
+    UAPP_CHECK(!uapp::crypto::secure_equal(first.bytes(), parent_a.bytes(), kContentKeyBytes));
+}
+
+UAPP_TEST("crypto.hkdf rejects an unlabelled derivation and an invalid parent") {
+    UAPP_REQUIRE(ensure_init());
+
+    ContentKey parent;
+    UAPP_REQUIRE_OK(uapp::crypto::generate_content_key(parent));
+
+    const std::string label("uapp/keys/v1/a");
+    const std::string info("id-1");
+
+    // An empty or absent label is refused, because an unlabelled derivation
+    // is how two edges of a hierarchy end up producing the same key.
+    {
+        ContentKey out;
+        UAPP_REQUIRE_STATUS(uapp::crypto::derive_subkey(parent, ByteView{}, view(info), out),
+                            Status::InvalidArgument);
+        UAPP_CHECK(!out.valid());
+
+        const std::string empty_label;
+        UAPP_REQUIRE_STATUS(
+            uapp::crypto::derive_subkey(parent, view(empty_label), view(info), out),
+            Status::InvalidArgument);
+        UAPP_CHECK(!out.valid());
+    }
+
+    // Over-long label and info are refused rather than truncated: a
+    // truncated label is a different label, silently.
+    {
+        ContentKey        out;
+        const std::string long_label(uapp::crypto::kMaxKdfLabelBytes + 1u, 'L');
+        UAPP_REQUIRE_STATUS(
+            uapp::crypto::derive_subkey(parent, view(long_label), view(info), out),
+            Status::InvalidArgument);
+        UAPP_CHECK(!out.valid());
+
+        const std::string long_info(uapp::crypto::kMaxKdfInfoBytes + 1u, 'I');
+        UAPP_REQUIRE_STATUS(
+            uapp::crypto::derive_subkey(parent, view(label), view(long_info), out),
+            Status::InvalidArgument);
+        UAPP_CHECK(!out.valid());
+    }
+
+    // An invalid parent is an error, never a derivation from zero bytes.
+    {
+        const ContentKey invalid;
+        ContentKey       out;
+        UAPP_REQUIRE_STATUS(uapp::crypto::derive_subkey(invalid, view(label), view(info), out),
+                            Status::CryptoKeyInvalid);
+        UAPP_CHECK(!out.valid());
+    }
+
+    // An empty info IS legal — it is the one-child edge — and must not be
+    // confused with an empty label.
+    {
+        ContentKey        out;
+        const std::string no_info;
+        UAPP_REQUIRE_OK(uapp::crypto::derive_subkey(parent, view(label), view(no_info), out));
+        UAPP_CHECK(out.valid());
+
+        ContentKey out_null;
+        UAPP_REQUIRE_OK(uapp::crypto::derive_subkey(parent, view(label), ByteView{}, out_null));
+        UAPP_CHECK(out_null.valid());
+        UAPP_CHECK_MSG(
+            uapp::crypto::secure_equal(out.bytes(), out_null.bytes(), kContentKeyBytes),
+            "an empty info and an absent info must derive the same key");
+    }
 }

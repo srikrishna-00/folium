@@ -560,11 +560,82 @@ if(UAPP_CRYPTO_ENABLED)
     add_test(NAME uapp.crypto.aead    COMMAND uapp_crypto_tests "crypto.aead")
     add_test(NAME uapp.crypto.wrap    COMMAND uapp_crypto_tests "crypto.wrap")
     add_test(NAME uapp.crypto.kdf     COMMAND uapp_crypto_tests "crypto.kdf")
+    add_test(NAME uapp.crypto.hkdf    COMMAND uapp_crypto_tests "crypto.hkdf")
     add_test(NAME uapp.crypto.nonce   COMMAND uapp_crypto_tests "crypto.nonce")
     add_test(NAME uapp.crypto.memory  COMMAND uapp_crypto_tests "crypto.memory")
 
     set_tests_properties(uapp.crypto.init uapp.crypto.vectors uapp.crypto.aead
-                         uapp.crypto.wrap uapp.crypto.kdf uapp.crypto.nonce
-                         uapp.crypto.memory
+                         uapp.crypto.wrap uapp.crypto.kdf uapp.crypto.hkdf
+                         uapp.crypto.nonce uapp.crypto.memory
+                         PROPERTIES TIMEOUT 300)
+endif()
+
+# ---------------------------------------------------------------------------
+# security/keys — the key HIERARCHY (security-model.md section 5A.1,
+# ADR-0002 decision 1).
+#
+# An EIGHTH separate executable, under the same UAPP_CRYPTO_ENABLED guard as
+# uapp_crypto_tests and for the same reason: with libsodium absent neither
+# module is compiled, so these cases cannot be compiled-and-skipped.
+#
+# It links ONLY uapp::security_keys, which brings uapp::security_crypto in
+# PUBLIC-ly and libsodium not at all. So this binary cannot reach SQLite,
+# core/notes, core/blocks, core/database, file-engine, pdf-engine OR a raw
+# libsodium call, and "the key hierarchy is a function over keys and ids that
+# knows nothing about storage or the document model" is checked by the link
+# line rather than by review. It is deliberately a SEPARATE binary from
+# uapp_crypto_tests rather than two more files in one: "the primitives are
+# wrong" and "the hierarchy over them is wrong" are different failures, and
+# tests/crypto proves a header boundary (no <sodium.h>) that would be
+# diluted by mixing the two.
+#
+# Six CTest entries over one binary, split by name filter, because the six
+# failure modes mean six different things:
+#   .root       — the recovery secret and the URK derived from it. Everything
+#                 below is meaningless if this edge is wrong, and a change
+#                 here invalidates every existing user's recovery phrase
+#   .device     — the URK wrapped to another of the user's devices (the
+#                 "DEVICE KEY BUNDLE"), including that a third device, a
+#                 wrong sender and a tampered or relabelled record are all
+#                 rejected
+#   .recovery   — the URK under an Argon2id-derived key, including a wrong
+#                 passphrase, a tampered salt and a downgraded KDF profile.
+#                 FLAGGED FOR REVIEW as an additional path, not the root of
+#                 trust (security/keys/include/uapp/keys/key_hierarchy.h)
+#   .workspace  — the workspace key wrapped under the URK, and that the
+#                 workspace id is really bound into the record
+#   .document   — per-document keys DERIVED, not stored (the section 5A.1
+#                 scheme), including the edge-confusion check that proves the
+#                 domain-separation labels reach the derivation
+#   .chain      — the whole hierarchy on real content: recovery phrase ->
+#                 URK -> workspace key -> document key -> AEAD, read back by
+#                 a second device, by the phrase alone, and by the
+#                 passphrase-wrapped URK. This is the entry that fails if any
+#                 key in the design is accidentally per-device or
+#                 nondeterministic
+#
+# TIMEOUT 300, matching uapp_crypto_tests: .recovery and .chain run Argon2id
+# several times, and under ASan+UBSan a memory-hard function is several times
+# slower than in a plain Debug build.
+# ---------------------------------------------------------------------------
+if(UAPP_CRYPTO_ENABLED)
+    add_executable(uapp_keys_tests
+        support/test_main.cpp
+        keys/key_hierarchy_test.cpp)
+
+    target_include_directories(uapp_keys_tests PRIVATE support keys)
+
+    target_link_libraries(uapp_keys_tests
+        PRIVATE uapp::security_keys uapp::compiler_options)
+
+    add_test(NAME uapp.keys.root      COMMAND uapp_keys_tests "keys.root")
+    add_test(NAME uapp.keys.device    COMMAND uapp_keys_tests "keys.device")
+    add_test(NAME uapp.keys.recovery  COMMAND uapp_keys_tests "keys.recovery")
+    add_test(NAME uapp.keys.workspace COMMAND uapp_keys_tests "keys.workspace")
+    add_test(NAME uapp.keys.document  COMMAND uapp_keys_tests "keys.document")
+    add_test(NAME uapp.keys.chain     COMMAND uapp_keys_tests "keys.chain")
+
+    set_tests_properties(uapp.keys.root uapp.keys.device uapp.keys.recovery
+                         uapp.keys.workspace uapp.keys.document uapp.keys.chain
                          PROPERTIES TIMEOUT 300)
 endif()

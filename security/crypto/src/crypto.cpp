@@ -372,6 +372,64 @@ Status unwrap_content_key(const DeviceKeyPair& recipient, const PublicKey& wrapp
     return out.import(plaintext.data(), plaintext.size());
 }
 
+// --- subkey derivation -----------------------------------------------------
+
+static_assert(kContentKeyBytes == crypto_kdf_hkdf_sha256_KEYBYTES,
+              "HKDF-SHA256's PRK is no longer the same width as our AEAD key");
+
+Status derive_subkey(const ContentKey& parent, ByteView label, ByteView info, ContentKey& out) {
+    out.reset();
+
+    const Status init_status = require_init();
+    if (!is_ok(init_status)) { return init_status; }
+
+    if (!parent.valid()) { return Status::CryptoKeyInvalid; }
+    if (label.data == nullptr || label.size == 0) { return Status::InvalidArgument; }
+    if (label.size > kMaxKdfLabelBytes) { return Status::InvalidArgument; }
+    if (info.data == nullptr && info.size != 0) { return Status::InvalidArgument; }
+    if (info.size > kMaxKdfInfoBytes) { return Status::InvalidArgument; }
+
+    // The PRK is key material, so it lives in guarded memory rather than on
+    // the stack: a 32-byte intermediate that reconstructs every key below it
+    // deserves the same handling as the keys themselves.
+    SecureBytes  prk;
+    const Status alloc = SecureBytes::allocate(crypto_kdf_hkdf_sha256_KEYBYTES, prk);
+    if (!is_ok(alloc)) { return alloc; }
+
+    // Extract: salt = the edge label, IKM = the parent key. RFC 5869's salt
+    // is "optional (non-secret)" and is exactly the right place for a
+    // domain-separation constant.
+    if (crypto_kdf_hkdf_sha256_extract(prk.data(), label.data, label.size, parent.bytes(),
+                                       kContentKeyBytes) != 0) {
+        return Status::Internal;
+    }
+
+    // Expand: ctx = info = which child along that edge. libsodium's prototype
+    // takes `const char*`; the cast is a signedness change over bytes we
+    // never interpret as text.
+    //
+    // `info.data` can legitimately be null when size == 0 (an edge with one
+    // child). Pass a valid pointer anyway rather than relying on a library's
+    // handling of (null, 0) — the HMAC update behind it is not documented for
+    // that case.
+    const std::uint8_t  empty  = 0;
+    const std::uint8_t* ctx    = info.size == 0 ? &empty : info.data;
+    std::uint8_t        scratch[kContentKeyBytes];
+
+    const int rc = crypto_kdf_hkdf_sha256_expand(scratch, sizeof scratch,
+                                                 reinterpret_cast<const char*>(ctx), info.size,
+                                                 prk.data());
+    if (rc != 0) {
+        secure_zero(scratch, sizeof scratch);
+        return Status::Internal;
+    }
+
+    const Status s = out.import(scratch, sizeof scratch);
+    secure_zero(scratch, sizeof scratch);
+    if (!is_ok(s)) { out.reset(); }
+    return s;
+}
+
 // --- passphrase KDF --------------------------------------------------------
 
 void kdf_parameters(KdfProfile profile, unsigned long long& opslimit,

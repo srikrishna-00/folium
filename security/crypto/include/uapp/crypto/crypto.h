@@ -155,13 +155,19 @@
 // NOT IMPLEMENTED — the E2EE architecture this layer is the floor of
 // =========================================================================
 // Explicitly out of scope here, each with the document that owns it:
-//   1. The key HIERARCHY. There is no Recovery Secret, no User Root Key, no
-//      Workspace Key, no per-document key derivation (security-model.md
-//      §5A.1). This module can generate a 32-byte key and wrap it; it has no
-//      opinion about which of those a given key is. `crypto_kdf_derive_from_key`
-//      is the libsodium primitive that HKDF(WSK, doc_id) will use; it is not
-//      wrapped yet, because wrapping it without the hierarchy to use it
-//      would be an unused API with a security-critical context string.
+//   1. The key HIERARCHY — **NO LONGER HERE, and still not in this module.**
+//      Recovery Secret -> URK -> Workspace Key -> document key
+//      (security-model.md §5A.1) landed on 2026-10-20 in `security/keys`,
+//      which links this module and contains no cryptography of its own.
+//      THIS MODULE STILL HAS NO OPINION about which of those a given
+//      ContentKey is: it can generate 32 bytes, derive 32 bytes from 32
+//      bytes, seal and wrap, and that is all. The one thing that changed
+//      here is that derive_subkey() now exists (see "SUBKEY DERIVATION"
+//      below), because the hierarchy that needed it arrived — the condition
+//      this item previously set for wrapping it.
+//      NOT in security/keys either, and listed again under its own
+//      NOT IMPLEMENTED heading there: URK-pub (the published X25519 half of
+//      the URK), enrolment, rotation and revocation.
 //   2. Chunked blob encryption (security-model.md §5: 1 MiB chunks,
 //      deterministic nonce, AAD = blob_id || chunk_index || total_chunks).
 //      seal() takes an AAD argument and binding that triple into it is
@@ -550,6 +556,67 @@ enum class KdfProfile : int {
 [[nodiscard]] Status unwrap_content_key(const DeviceKeyPair& recipient,
                                         const PublicKey& wrapper_public,
                                         const WrappedKey& wrapped, ContentKey& out);
+
+// --- subkey derivation (HKDF) ---------------------------------------------
+//
+// ADDED 2026-10-20, when the layer that needed it arrived. NOT IMPLEMENTED
+// item 1 below used to say: "`crypto_kdf_derive_from_key` is the libsodium
+// primitive that HKDF(WSK, doc_id) will use; it is not wrapped yet, because
+// wrapping it without the hierarchy to use it would be an unused API with a
+// security-critical context string." `security/keys` is that hierarchy, so
+// the function is now wrapped — and with ONE deliberate change from what
+// that sentence predicted, recorded here because it is a real choice:
+//
+// **It is crypto_kdf_hkdf_sha256, not crypto_kdf_derive_from_key.**
+// crypto_kdf_derive_from_key's context is a FIXED 8 BYTES and its subkey
+// selector is a uint64. `security-model.md` §5A.1 writes the edges of the
+// hierarchy as `HKDF(WSK, doc_id)` and `HKDF(DocKey, blob_id)`, and a doc_id
+// in this codebase is a string identifier, not a u64 (core/blocks). Hashing
+// a string id down to a u64 to fit the API would introduce a collision
+// domain — two documents sharing a derived key — that the written design
+// does not have, to save nothing. libsodium ships HKDF (RFC 5869) since
+// 1.0.19 and §5A.1 literally says HKDF, so this is the construction the
+// design names rather than a substitution.
+//
+// Extract-then-expand, using libsodium's two-call API:
+//   PRK = HKDF-Extract(salt = label, IKM = parent key)
+//   out = HKDF-Expand(PRK, info, 32)
+// The LABEL is the salt and the ID is the info, which is the division RFC
+// 5869 §3.1/§3.2 describes: the label names the EDGE of the hierarchy (a
+// compile-time constant, one per edge, versioned) and the info names WHICH
+// child along that edge. Swapping the two would make every URK-to-WSK key
+// collide with every WSK-to-document key that happened to share an id.
+
+/// Longest domain-separation label. Labels are compile-time constants in
+/// `security/keys` ("uapp/keys/v1/..."), never caller data.
+inline constexpr std::size_t kMaxKdfLabelBytes = 64;
+
+/// Longest derivation info (a workspace id, a document id, a blob id).
+inline constexpr std::size_t kMaxKdfInfoBytes = 256;
+
+/// Derive a 256-bit subkey from `parent` under `label` and `info`.
+///
+/// DETERMINISTIC and device-independent: the same (parent, label, info)
+/// yields the same subkey everywhere, forever. That is what lets
+/// `security-model.md` §5A.1 store ONE wrapped key per workspace instead of
+/// one per document — the document key is recomputed, never stored. It also
+/// means a change to a label is a change to every key below it, which is why
+/// the labels carry a version segment.
+///
+/// `label` is MANDATORY and must be non-empty: an unlabelled derivation is
+/// how two different edges of a hierarchy end up producing the same key from
+/// the same parent. `info` may be empty, for an edge with exactly one child
+/// (the recovery-secret-to-URK edge is the only such edge today).
+///
+/// This does NOT take a passphrase and is NOT a password KDF. HKDF is fast
+/// by design; it assumes `parent` is already a uniformly random 256-bit key.
+/// Deriving from something a human chose is derive_key_from_passphrase().
+///
+/// Errors: CryptoNotInitialised, CryptoKeyInvalid (parent not valid()),
+/// InvalidArgument (empty/null label, null-with-size view, or either input
+/// over its cap), CryptoSecureAllocFailed, Internal.
+[[nodiscard]] Status derive_subkey(const ContentKey& parent, ByteView label, ByteView info,
+                                   ContentKey& out);
 
 // --- passphrase key derivation --------------------------------------------
 
