@@ -716,3 +716,69 @@ if(UAPP_CRYPTO_ENABLED)
                          uapp.keys.workspace uapp.keys.document uapp.keys.chain
                          PROPERTIES TIMEOUT 300)
 endif()
+
+# ---------------------------------------------------------------------------
+# ocr/engine — printed-text recognition against a real Tesseract (spec
+# section 13).
+#
+# Conditional on UAPP_OCR_ENABLED for the same reason uapp_pdf_tests is
+# conditional on UAPP_PDF_ENABLED and uapp_crypto_tests on
+# UAPP_CRYPTO_ENABLED: with no system Tesseract found, ocr/engine is not
+# compiled at all, so these cases cannot be compiled-and-skipped. No
+# skipped-test placeholder is registered.
+#
+# A separate executable. It links ONLY uapp::ocr_engine, which links
+# uapp::core_common PUBLIC and uapp::tesseract PRIVATE — so it cannot reach
+# SQLite, core/notes, core/blocks, core/database, file-engine, pdf-engine or
+# ai/, and "recognition is pixels in, TextBlocks out, with no document model
+# or storage behind it" is checked by the link line rather than by review. It
+# also proves the header boundary this module cares about most: this file
+# includes only uapp/ocr/engine.h and never <tesseract/capi.h>.
+#
+# UAPP_OCR_TEST_TESSDATA is handed to the test target as a compile
+# definition, sourced from UAPP_TESSERACT_TESSDATA (cmake/UappTesseract.cmake
+# — a tessdata directory located on THIS host, never compiled into
+# ocr/engine itself, which has no default path by design; see
+# Options::tessdata_path). If no tessdata was found at configure time the
+# macro is defined empty and the "ocr.read" recognition cases skip
+# themselves at runtime with a clear message, rather than failing for a
+# reason that has nothing to do with the module under test — the library
+# still links and the input-validation cases ("ocr.bounds", most of
+# "ocr.open") still run regardless, because they need no model at all.
+#
+# Three CTest entries over one binary, split by name filter, because the
+# three failure modes mean different things:
+#   .read    — real recognition against the embedded fixture image (spec
+#              section 13's actual OCR claim: clear text is read correctly,
+#              with a real bounding box and confidence; a blank or noise
+#              image degrades gracefully rather than fabricating a result)
+#   .bounds  — the image-geometry validation spec section 38 requires
+#              (oversized dimensions, oversized total pixel count, a buffer
+#              too small for the claimed geometry), needing no Tesseract
+#              model at all
+#   .open    — Engine::open()'s own input validation (language tag syntax,
+#              a language this build has no pack for, a bad tessdata path,
+#              out-of-range dpi/confidence) plus the handle-lifecycle cases
+#              (recognise() before open, close() idempotence, a negative
+#              page index, a null pixel pointer)
+# ---------------------------------------------------------------------------
+if(UAPP_OCR_ENABLED)
+    add_executable(uapp_ocr_tests
+        support/test_main.cpp
+        ocr/ocr_engine_test.cpp)
+
+    target_include_directories(uapp_ocr_tests PRIVATE support ocr)
+
+    target_link_libraries(uapp_ocr_tests
+        PRIVATE uapp::ocr_engine uapp::compiler_options)
+
+    target_compile_definitions(uapp_ocr_tests PRIVATE
+        UAPP_OCR_TEST_TESSDATA="${UAPP_TESSERACT_TESSDATA}")
+
+    add_test(NAME uapp.ocr.read   COMMAND uapp_ocr_tests "ocr.read")
+    add_test(NAME uapp.ocr.bounds COMMAND uapp_ocr_tests "ocr.bounds")
+    add_test(NAME uapp.ocr.open   COMMAND uapp_ocr_tests "ocr.open")
+
+    set_tests_properties(uapp.ocr.read uapp.ocr.bounds uapp.ocr.open
+                         PROPERTIES TIMEOUT 120)
+endif()

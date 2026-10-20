@@ -80,6 +80,13 @@ and "run local AI" are in direct tension and the tension has to be resolved with
 | Tesseract + `tessdata_fast` | **≈ 4–5 MB** for the full fast set; `eng` alone is ~2 MB | **The portable fallback. Ship `tessdata_fast`, never `tessdata_best`.** The fast variant uses a smaller network and integerised weights, so it is both smaller and faster. |
 | Tesseract + `tessdata_best` | **≈ 15–23 MB** | **Prohibited on Tier D**, and questionable anywhere on mobile. Also note it targets the Tesseract 4 LSTM engine, not 5. |
 
+> **2026-10-20, `ocr/engine` bootstrap (`spikes/SP-10-findings.md`).** The first implementation
+> and its tests run against this dev host's full `tessdata` package (Homebrew default), not
+> `tessdata_fast` — real recognition was verified correct (a 300x80 test image reads back as
+> its known ground truth, confidence > 50/100), but the model-size and Tier D timing numbers
+> above are **not yet re-measured against this actual build**. Vendoring and measuring against
+> `tessdata_fast` specifically remains owed before this leaves bootstrap status.
+
 **Tier D OCR policy:** one page at a time, never parallel across pages (Tier B parallelises);
 downscale to 200 DPI rather than 300 DPI before recognition where the source permits;
 per-page latency budget relaxed to **6 s** (Tesseract) / **1.5 s** (platform), with visible

@@ -246,6 +246,50 @@ enum class Status : std::int32_t {
     AiRateLimited              = 1216,  ///< provider-reported throttling — never retried here
     AiContentPolicyRejected    = 1217,  ///< provider refused the content — NEVER retried (§5)
     AiConsentRevoked           = 1218,  ///< the grant was revoked; stops FUTURE egress only
+
+    // --- OCR engine (13xx) --------------------------------------------------
+    // ocr/engine — the PRINTED-TEXT slice of spec §13: one raster image in, a
+    // list of TextBlock{text, bounding_box, confidence, page, language, style}
+    // out, with real coordinates from Tesseract's own page iterator.
+    //
+    // Section 13 also lists tables, forms, receipts, business cards and
+    // handwriting ("where feasible"). None of those exist, and per the rule
+    // the 7xx/8xx/9xx blocks state for themselves -- a code with no code path
+    // behind it is a promise this enum cannot keep -- NONE of them gets a code
+    // here. There is no OcrTableMalformed and no OcrHandwritingUnsupported.
+    //
+    // Note the DELIBERATE SPLIT between the three "no model" codes, which a
+    // less careful enum would collapse into one "OCR unavailable":
+    //
+    //   OcrDataPathInvalid        — the directory we were pointed at is not a
+    //         usable tessdata directory. A PACKAGING bug; the fix is in the
+    //         installer, not in the UI.
+    //   OcrLanguageUnavailable    — the directory is fine and
+    //         <lang>.traineddata is not in it. A DOWNLOAD the user can be
+    //         offered (api-design.md §4.6 already promises
+    //         GET /v1/ocr/languages "which are on this device"), so the UI
+    //         must be able to tell this apart from the case above.
+    //   OcrLanguageNotImplemented — this BUILD will not ask for that language
+    //         at all, because no pack for it has been vetted or vendored.
+    //         Offering a download here would be a lie. Only "eng" is wired in
+    //         this slice; see ocr/engine/include/uapp/ocr/engine.h.
+    //
+    // There is deliberately NO code for "the image was blank" or "the text was
+    // illegible". Both are SUCCESSFUL recognitions of an image with no legible
+    // text, and they return Status::Ok with zero or low-confidence blocks. An
+    // OCR engine that reports failure for a photograph of a blank wall teaches
+    // its caller to read Ok as "found something", which is exactly the
+    // assumption a 14%-confidence noise result violates.
+    OcrNotOpen                = 1300,  ///< recognise() on an Engine that holds no engine
+    OcrDataPathInvalid        = 1301,  ///< tessdata path empty, NUL-bearing, or not a directory
+    OcrLanguageUnavailable    = 1302,  ///< no <lang>.traineddata in that tessdata directory
+    OcrLanguageNotImplemented = 1303,  ///< a §13 language this build has no vetted pack for
+    OcrLanguageMalformed      = 1304,  ///< language tag empty, over-long, or not [a-z]+
+    OcrEngineInitFailed       = 1305,  ///< Tesseract refused inputs that passed every check above
+    OcrImageSizeInvalid       = 1306,  ///< non-positive, over a cap, or arithmetically overflowing
+    OcrImageBufferTooSmall    = 1307,  ///< the caller's pixel buffer cannot hold that geometry
+    OcrRecognitionFailed      = 1308,  ///< Tesseract's recogniser returned failure for the page
+    OcrResultTooLarge         = 1309,  ///< more blocks, or more text, than this build will return
 };
 
 /// True iff the operation succeeded. Prefer `if (!uapp::is_ok(s))` over

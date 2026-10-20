@@ -299,6 +299,114 @@ repository right now. Everything in sections 1-5 is not.
        argument for choosing it and NOT an argument for skipping the
        monitoring.
 
+  Tesseract
+  ---------
+  SPDX identifier ...... Apache-2.0
+  Version .............. 5.5.3 (Homebrew stable bottle)
+  Used by .............. ocr/engine (spec section 13): printed-text
+                         recognition only. Tables, forms, receipts/business
+                         cards, handwriting and every language but "eng" are
+                         NOT IMPLEMENTED -- see ocr/engine/include/uapp/ocr/
+                         engine.h.
+  Pinned at ............ NOT pinned -- see "NOT PINNED, AND WHY" below
+  Linking .............. dynamic (libtesseract.dylib) on the macOS dev host
+  Upstream ............. https://tesseract-ocr.github.io/  /  tesseract-ocr/tesseract
+
+  ** STATUS: LOCAL DEV BOOTSTRAP. This is a Homebrew bottle on the dev host, **
+  ** not a build we performed and not what ships on Android or iOS.          **
+
+  The dependency was vetted in docs/spikes/SP-10-findings.md, the same
+  criteria SP-1 and SP-9 applied to PDFium and libsodium respectively.
+
+  Licence verification -- performed against the FILE IN THE INSTALLED PREFIX:
+
+    * third_party/tesseract/LICENSE is a byte-for-byte copy of
+      /opt/homebrew/opt/tesseract/LICENSE: the Apache License, Version 2.0.
+      The full text, plus a NOTICE-equivalent attribution, MUST be included
+      in the product's open-source-licences screen.
+    * The eng.traineddata language pack this build accepts (and the only one
+      it accepts -- see engine.h's Options::language) carries the same
+      Apache-2.0 licence, per Google's tesseract-ocr/tessdata /
+      tessdata_fast repositories.
+
+  Leptonica (TRANSITIVE dependency -- linked by libtesseract, not by us)
+  -----------------------------------------------------------------------
+  SPDX identifier ...... BSD-2-Clause
+  Version .............. 1.87.0 (Homebrew stable bottle, pulled in as a
+                         dependency of tesseract, not requested directly)
+  Used by .............. nothing in this tree directly. ocr/engine calls
+                         TessBaseAPISetImage() with raw bytes and never
+                         touches a Pix; no Leptonica type or symbol appears
+                         in our call graph. It is resolved by the dynamic
+                         linker from libtesseract's own load commands.
+  Upstream .............. http://www.leptonica.org/  /  DanBloomberg/leptonica
+
+  Verified via the Homebrew formula's own licence metadata (BSD-2-Clause,
+  permissive, no share-alike terms). Still gets this entry because it is
+  linked into the shipped binary either way (spec section 35 applies to what
+  ships, not to what we wrote target_link_libraries lines for), even though
+  it needed no line in cmake/UappTesseract.cmake -- see that file's header
+  comment for why.
+
+  NOT PINNED, AND WHY -- the one real difference from libsodium's entry
+  -----------------------------------------------------------------------
+  libsodium's entry above pins an exact upstream tarball and SHA-256.
+  Tesseract's does not, and cmake/UappTesseract.cmake's own header comment
+  argues why: unlike libsodium, Tesseract's observable behaviour is NOT
+  checkable against a published test vector -- an OCR result is a judgement
+  about image content, not a known-answer cryptographic output -- so a
+  surprise version change is a quiet accuracy drift rather than a red test.
+  What this build does instead: cmake/UappTesseract.cmake reports the exact
+  version found (read from the installed tesseract/version.h) and the root
+  CMakeLists prints it at configure time, so "which recogniser produced
+  these numbers" is answerable from a build log even without a pin. This is
+  WEAKER than a pin and is stated as such in third_party/tesseract/README.md,
+  "What is still owed" -- the hermetic from-source build is what actually
+  closes this, by pinning a specific upstream commit the way SP-1's hermetic
+  PDFium build will.
+
+  THE REAL CONSTRAINT IS NOT THE LICENCE
+  ---------------------------------------
+  `otool -L /opt/homebrew/lib/libtesseract.dylib` shows it linked against
+  libcurl AND libarchive -- Tesseract 5's build uses them to fetch and
+  unpack .traineddata over HTTP when a requested language is missing
+  locally. ocr/engine never exercises this (it rejects every language but
+  "eng" outright), but under ADR-0002 decision 1 a document image is
+  decrypted client-side and must not leave the device, and a network client
+  compiled into the library that processes it is a capability this build
+  should not ship with even unused. A production build of Tesseract for
+  Android/iOS MUST pass -DDISABLE_CURL=ON -DDISABLE_ARCHIVE=ON. Recorded in
+  third_party/tesseract/README.md as the load-bearing item in "what is still
+  owed", and in docs/spikes/SP-10-findings.md section 2 in full.
+
+  Static vs dynamic linking: Apache-2.0, like the ISC text above, makes no
+  distinction -- static linking into a closed-source commercial binary is
+  permitted, with the licence text and a NOTICE-equivalent attribution as
+  the obligation. No export-control finding distinct from libsodium's (R-33)
+  applies here: Tesseract provides no content-confidentiality capability, so
+  it does not independently change the app's ITSAppUsesNonExemptEncryption
+  determination.
+
+  WHAT IS STILL OWED (do not let this entry read as "OCR: done")
+  ----------------------------------------------------------------
+    1. The hermetic from-source build for android-arm64 and ios-arm64, with
+       -DDISABLE_CURL=ON -DDISABLE_ARCHIVE=ON, which also closes the "not
+       pinned" gap above by pinning a specific upstream commit.
+    2. Closing the exceptions-boundary residual risk (SP-10-findings.md
+       section 3): ocr/engine.cpp crosses from this project's
+       -fno-exceptions code into libtesseract (compiled WITH exceptions)
+       through the C API only, on the strength of that being the narrowest
+       surface available -- not a documented upstream guarantee. Building
+       libtesseract ourselves with -fno-exceptions closes this properly.
+    3. A real on-device memory/time measurement of tessdata_fast (this spike
+       measured the dev-host's full tessdata package, not tessdata_fast)
+       against the ADR-0002 2 GB device floor.
+    4. A fuzz target over ocr::Engine::recognise() -- named, not written,
+       matching the judgement call ai/'s own CMakeLists.txt already recorded
+       for its own untrusted-input surface.
+    5. Automated CVE monitoring against whichever commit the hermetic build
+       eventually pins.
+
   Not in this section, deliberately
   ---------------------------------
   SQLite is used by storage/sqlite but is NOT vendored: the build links the

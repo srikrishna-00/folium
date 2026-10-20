@@ -128,6 +128,17 @@ const char* status_code(Status s) noexcept {
         case Status::AiRateLimited:              return "AI_RATE_LIMITED";
         case Status::AiContentPolicyRejected:    return "AI_CONTENT_POLICY_REJECTED";
         case Status::AiConsentRevoked:           return "AI_CONSENT_REVOKED";
+
+        case Status::OcrNotOpen:                 return "OCR_NOT_OPEN";
+        case Status::OcrDataPathInvalid:         return "OCR_DATA_PATH_INVALID";
+        case Status::OcrLanguageUnavailable:     return "OCR_LANGUAGE_UNAVAILABLE";
+        case Status::OcrLanguageNotImplemented:  return "OCR_LANGUAGE_NOT_IMPLEMENTED";
+        case Status::OcrLanguageMalformed:       return "OCR_LANGUAGE_MALFORMED";
+        case Status::OcrEngineInitFailed:        return "OCR_ENGINE_INIT_FAILED";
+        case Status::OcrImageSizeInvalid:        return "OCR_IMAGE_SIZE_INVALID";
+        case Status::OcrImageBufferTooSmall:     return "OCR_IMAGE_BUFFER_TOO_SMALL";
+        case Status::OcrRecognitionFailed:       return "OCR_RECOGNITION_FAILED";
+        case Status::OcrResultTooLarge:          return "OCR_RESULT_TOO_LARGE";
     }
     // Reached only if a caller casts a bogus integer into Status. We do not
     // trust that it cannot happen just because the enum is closed.
@@ -320,6 +331,27 @@ const char* status_message(Status s) noexcept {
             return "The AI provider refused this content under its content policy.";
         case Status::AiConsentRevoked:
             return "That consent grant was revoked; it stops future sends only.";
+
+        case Status::OcrNotOpen:
+            return "The OCR engine is not open.";
+        case Status::OcrDataPathInvalid:
+            return "The OCR language-data directory is missing or unusable.";
+        case Status::OcrLanguageUnavailable:
+            return "No OCR language data for that language is installed on this device.";
+        case Status::OcrLanguageNotImplemented:
+            return "This build has no OCR language pack for that language.";
+        case Status::OcrLanguageMalformed:
+            return "That OCR language tag is empty, too long, or not lowercase letters.";
+        case Status::OcrEngineInitFailed:
+            return "The OCR engine could not initialise with that language data.";
+        case Status::OcrImageSizeInvalid:
+            return "The image size, stride or pixel count is outside what OCR accepts.";
+        case Status::OcrImageBufferTooSmall:
+            return "The supplied pixel buffer is too small for that image geometry.";
+        case Status::OcrRecognitionFailed:
+            return "The OCR engine failed while recognising that image.";
+        case Status::OcrResultTooLarge:
+            return "That image produced more OCR output than this build will return.";
     }
     return "Unrecognised status code.";
 }

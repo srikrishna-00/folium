@@ -368,6 +368,45 @@ uapp_status_t to_c_status(Status s) noexcept {
         case Status::AiResponseMalformed:
         case Status::AiRateLimited:
         case Status::AiContentPolicyRejected:
+        // ===================================================================
+        // ocr/engine (spec §13): NOT MINTED — an eighth module, and the first
+        // one where the blocker is a MISSING TYPE rather than a missing
+        // decision.
+        // ===================================================================
+        // There is no uapp_ocr.h, so a C caller can reach none of these ten.
+        // What blocks it is not the status vocabulary — these ten are stable,
+        // they describe packaging and input validation and nothing else — but
+        // the OUTPUT type. `ocr::Engine::recognise()` hands back a
+        // std::vector<TextBlock> of owning std::strings, and the C shape of
+        // that is the open question: a caller-allocated array needs a two-pass
+        // "how many blocks?" / "now give me them" protocol whose first pass
+        // costs a full recognition unless the result is cached behind a
+        // handle, and a library-allocated array needs a free function plus a
+        // documented ownership rule for every string in it. pdf-engine skipped
+        // this question entirely because its output is a pixel buffer the
+        // caller already owns (uapp/capi/uapp_pdf.h); OCR cannot, because the
+        // size of its output is not knowable before the work is done.
+        //
+        // ONE NOTE FOR WHOEVER MINTS THESE LATER, about the three "no model"
+        // codes rather than about versioning: OcrDataPathInvalid,
+        // OcrLanguageUnavailable and OcrLanguageNotImplemented MUST survive as
+        // SEPARATE C constants, for the reason uapp/status.h's 13xx block
+        // argues at length — they mean "fix the installer", "offer the user a
+        // download" and "offer the user nothing, we have no pack at all", and
+        // a binding handed one OCR_UNAVAILABLE cannot tell those apart. That
+        // is the same argument the seven consent codes above make, and the
+        // opposite of the CryptoAuthFailed rule, for the same reason: none of
+        // these three is decided over secret material.
+        case Status::OcrNotOpen:
+        case Status::OcrDataPathInvalid:
+        case Status::OcrLanguageUnavailable:
+        case Status::OcrLanguageNotImplemented:
+        case Status::OcrLanguageMalformed:
+        case Status::OcrEngineInitFailed:
+        case Status::OcrImageSizeInvalid:
+        case Status::OcrImageBufferTooSmall:
+        case Status::OcrRecognitionFailed:
+        case Status::OcrResultTooLarge:
             return UAPP_STATUS_UNEXPECTED;
     }
     // A code the core added and this layer has not been taught. We must not

@@ -12,6 +12,102 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `ocr/engine`: printed-text OCR against a real Tesseract (spec §13)
+
+First code for spec section 13 (OCR Engine), scoped to the printed-text case. Tables, forms,
+receipts/business-card entity extraction, handwriting, and languages beyond English are all
+**NOT IMPLEMENTED** with specific reasons recorded in `ocr/engine/include/uapp/ocr/engine.h` —
+three are "nobody has done the work," two (handwriting, multi-language) are "the vetted
+dependency cannot do it / we have not vendored the pack."
+
+**Dependency vetting** (`docs/spikes/SP-10-findings.md`, matching the SP-1/SP-9 bar): Tesseract
+5.5.3 is Apache-2.0, Leptonica (a transitive dependency, never a direct one — `ocr/engine` uses
+raw bytes via `TessBaseAPISetImage()` and never touches a `Pix`) is BSD-2-Clause, both verified
+against the actual installed license files. **The real constraint is not the license**:
+`otool -L` on the Homebrew `libtesseract.dylib` shows it linked against libcurl and libarchive —
+Tesseract 5's build uses them to fetch `.traineddata` over HTTP when a language pack is missing
+locally. `ocr/engine` never exercises this (only `eng` is accepted; every other language tag is
+`Status::OcrLanguageNotImplemented`), but under ADR-0002 decision 1 a network client compiled
+into the library that processes decrypted document images is a capability a shipping build must
+not have even unused — a real mobile build **must** configure
+`-DDISABLE_CURL=ON -DDISABLE_ARCHIVE=ON`. Recorded as the load-bearing item in
+`third_party/tesseract/README.md`, "what is still owed."
+
+**The image-buffer convention deliberately matches `pdf-engine`'s `RenderTarget`** field for
+field (`ImageView`: same pixels/capacity_bytes/width/height/stride_bytes shape, same "0 stride
+means tightly packed" rule) — not for tidiness, but because the first real use of this module is
+"render a PDF page with pdf-engine, then OCR the pixels," and matching conventions means that
+pipeline needs no conversion step and no second allocation. `ImageView` is its own type rather
+than a reuse of `RenderTarget`, because `architecture.md` section 4 says engines depend on ports,
+never on each other, and because the pointer is `const` here — OCR reads pixels, it never writes
+them.
+
+Output is spec section 13's own `TextBlock` schema, field for field: recognised UTF-8 text,
+a real pixel bounding box (dropped rather than zeroed if Tesseract cannot report one),
+Tesseract's own 0-100 confidence (not rescaled — every published Tesseract threshold is quoted
+on that scale), the caller-supplied page index passed through unchanged (this module has no
+concept of a multi-page document), the language Tesseract reports it recognised the text in
+(read back per-word, not copied from the request, so it will not silently diverge once a
+multi-language pack is wired), and a `style` field that is present (so a future sixth field does
+not break every caller's struct) but honestly empty — measured on this build that
+`TessResultIteratorWordFontAttributes()` returns no font information at all under the LSTM
+engine this project uses, and fabricating `is_bold = false` from a field Tesseract never set
+would be exactly the kind of invented confidence this project has avoided everywhere else.
+
+Also a flagged, not-yet-closed residual risk, recorded in `ocr/engine/src/engine.cpp`'s own
+header: ADR-0001 compiles this project without exceptions, Tesseract is compiled with them, and
+this module crosses that boundary through `<tesseract/capi.h>` (the C API, not
+`tesseract::TessBaseAPI`) specifically because it is the narrowest surface available and the one
+upstream's other-language bindings already depend on — not a documented upstream guarantee.
+Closed properly only by building libtesseract ourselves with `-fno-exceptions`, part of the same
+hermetic build this dependency already owes for the real mobile targets.
+
+Bounded, validated input per spec section 38: `kMaxImageDimension` is set equal to
+`pdf::kMaxRenderDimension` deliberately (so a page rendered at pdf-engine's largest output size
+is always an image this module will accept), and a separate `kMaxImagePixels` (20 megapixels)
+bounds total memory rather than just one dimension — derived from Tesseract's actual internal
+allocation pattern (a 32bpp `Pix` copy, a 1bpp threshold image, and an LSTM grayscale copy, ~9
+bytes/pixel of internal state on top of the caller's buffer) against the ADR-0002 2GB device
+floor, not picked for looks. `kMaxTextBlocks` and `kMaxResultTextBytes` bound the output the same
+way, returning `Status::OcrResultTooLarge` rather than silently truncating — a truncated OCR
+result is indistinguishable from a complete one, and the consumer hurt most by that would be a
+future searchable-PDF builder.
+
+**Tests: 14 real assertions.** A real 300x80 grayscale image containing "HELLO WORLD" (generated
+from source with Pillow and embedded as a literal byte array in `tests/ocr/ocr_fixture.h` — the
+same "fixture built from source, not a downloaded binary" principle `tests/pdf_engine/
+pdf_fixture.h` established — independently verified against the real `tesseract(1)` CLI before
+being embedded) is correctly recognised end to end, with a real bounding box and >50/100
+confidence, at both paragraph and word granularity. A blank image and deterministic pseudo-noise
+both degrade gracefully (empty/near-empty result, or a defined `OcrRecognitionFailed`) rather
+than crashing or fabricating confidence. Input-validation cases (oversized dimensions, oversized
+total pixel count, a too-small buffer, a malformed/multi-language/unvetted language tag, a bad
+tessdata path, out-of-range dpi/confidence, recognition before open, a negative page index, a
+null pixel pointer) need no real model and run regardless of whether tessdata was found at
+configure time.
+
+Verified independently end to end myself (this work was originally drafted by an agent
+interrupted mid-task by a session rate limit — the CMake wiring, tests, and this documentation
+pass were completed directly afterward; the pre-existing header/implementation needed no
+changes): fresh clean build auto-detects the Homebrew Tesseract and enables the module, zero
+warnings at `-Werror`, `ctest` **61/61** (was 58/58, +3 new OCR suites), the new suite's own
+binary confirming **14/14** directly, a full from-scratch Debug+ASan/UBSan rebuild of the entire
+project also 61/61 clean, `-DUAPP_ENABLE_OCR=OFF` rebuilding the rest of the project at 58/58
+unaffected, and `nm -u` on the built `libuapp_ocr_engine.a` confirming zero SQLite/libsodium/
+crypto_ references — this module reaches `core/common` and `uapp::tesseract` only.
+
+NOT IMPLEMENTED: tables (a layout pass over this module's own `TextBlock` output, not a
+recognition feature — Tesseract 5's table detection is experimental and off by default), forms
+(tables plus a field/label/schema model nothing in this project has yet), receipts/business
+cards (entity extraction over OCR output — `ai/provider`'s job, a later integration, not a flag
+here), handwriting (the dependency genuinely cannot do this — `eng.traineddata` is trained on
+printed text, and shipping high-error-rate cursive recognition as "handwriting support" would be
+a misrepresentation), languages beyond English (declared and validated as a real parameter, not
+silently ignored — `Status::OcrLanguageNotImplemented` for anything else), and
+searchable-PDF/document-reconstruction generation (spec section 13's own stated reason for
+keeping coordinates — a `pdf-engine` *writer* feature, needing the QPDF dependency nothing in
+this tree links yet).
+
 ### Added — `ai/provider` + `ai/local`: the provider-independent AI abstraction (spec §17)
 
 Spec §17's instruction is one sentence — *"Do not hard-code the product to one AI provider"* —

@@ -124,6 +124,32 @@ set(UAPP_ENABLE_CRYPTO "AUTO" CACHE STRING
     "Build security/crypto against libsodium: ON, OFF or AUTO (detect)")
 set_property(CACHE UAPP_ENABLE_CRYPTO PROPERTY STRINGS AUTO ON OFF)
 
+# --- OCR (spec section 13) --------------------------------------------------
+# UAPP_ENABLE_OCR is the same TRISTATE as UAPP_ENABLE_PDF and
+# UAPP_ENABLE_CRYPTO, same three meanings. Like libsodium and unlike PDFium,
+# Tesseract is a standard packaged dependency found via pkg-config/find_library
+# on the system (cmake/UappTesseract.cmake) rather than a prebuilt binary
+# vendored under third_party/ and pinned by SHA-256 — there is no upstream
+# equivalent of bblanchon/pdfium-binaries to pin. See
+# cmake/UappTesseract.cmake's own header comment for why it follows
+# UappSodium.cmake's shape rather than UappPdfium.cmake's, and
+# docs/spikes/SP-10-findings.md for the full dependency vetting (license,
+# the Homebrew build's libcurl/libarchive linkage and why a shipping build
+# must disable both, mobile build story).
+#
+# The acquisition step is still one explicit human/CI command and CMake still
+# never touches the network:
+#     brew install tesseract                              # macOS
+#     apt install libtesseract-dev libleptonica-dev        # Debian/Ubuntu CI
+#
+# This gate covers printed-text recognition only; see
+# ocr/engine/include/uapp/ocr/engine.h for the full scoping argument (tables,
+# forms, receipts/business cards, handwriting and multi-language are all
+# NOT IMPLEMENTED).
+set(UAPP_ENABLE_OCR "AUTO" CACHE STRING
+    "Build ocr/engine against a system Tesseract: ON, OFF or AUTO (detect)")
+set_property(CACHE UAPP_ENABLE_OCR PROPERTY STRINGS AUTO ON OFF)
+
 option(UAPP_BUILD_TESTS       "Build unit tests"                         ${uapp_aux_default})
 option(UAPP_BUILD_TOOLS       "Build developer CLI / harness executables" ${uapp_aux_default})
 option(UAPP_ENABLE_SANITIZERS "Build with Address+UB sanitizers"         OFF)
@@ -225,6 +251,48 @@ endif()
 # unnecessary.
 add_subdirectory(ai)
 
+# --- ocr/ — printed-text recognition (spec section 13) ---------------------
+# Resolve the tristate into UAPP_OCR_ENABLED (a plain bool the rest of the
+# build and tests/ can branch on), exactly as UAPP_PDF_ENABLED and
+# UAPP_CRYPTO_ENABLED work above.
+#
+# Added here, straight after ai/, for the same "depends on core/common alone"
+# reason: ocr/engine links uapp::core_common PUBLIC-ly (Status) and
+# uapp::tesseract PRIVATE-ly, nothing else — no SQLite, no libsodium, no
+# document model, no network (see ocr/engine/CMakeLists.txt). The eventual
+# "OCR output feeds ai/'s entity extraction" and "OCR a rendered PDF page"
+# integrations are a CALLER's job, which is why this sits beside ai/ and
+# pdf-engine rather than depending on either.
+#
+# NOT skipped under UAPP_ENABLE_FUZZING, unlike storage/ and core/capi, and
+# like pdf-engine: ocr::Engine::recognise() IS the untrusted-input path spec
+# section 29 cares about (a crafted image, not just a crafted document), so
+# under fuzzing this is a library under test, not an extra cost. No fuzz
+# target is written for it in this slice — recorded as NOT IMPLEMENTED in
+# docs/file-format-support.md, not as unnecessary, matching the same
+# judgement call ai/'s CMakeLists.txt already recorded for its own
+# untrusted-input surface.
+set(UAPP_OCR_ENABLED FALSE)
+if(NOT UAPP_ENABLE_OCR STREQUAL "OFF")
+    include(cmake/UappTesseract.cmake)
+
+    if(UAPP_TESSERACT_FOUND)
+        set(UAPP_OCR_ENABLED TRUE)
+    elseif(UAPP_ENABLE_OCR STREQUAL "ON")
+        message(FATAL_ERROR
+            "uapp: UAPP_ENABLE_OCR=ON but libtesseract was not found.\n"
+            "  Reason: ${UAPP_TESSERACT_REASON}\n"
+            "  Install it (LOCAL DEV BOOTSTRAP — see third_party/tesseract/README.md):\n"
+            "      brew install tesseract                           # macOS\n"
+            "      apt install libtesseract-dev libleptonica-dev    # Debian/Ubuntu\n"
+            "  Or configure with -DUAPP_ENABLE_OCR=OFF to build without it.")
+    endif()
+endif()
+
+if(UAPP_OCR_ENABLED)
+    add_subdirectory(ocr)
+endif()
+
 if(NOT UAPP_ENABLE_FUZZING)
     add_subdirectory(storage)
 endif()
@@ -323,5 +391,20 @@ else()
     message(STATUS "uapp: pdf-engine          = OFF (${UAPP_ENABLE_PDF})")
     if(UAPP_PDFIUM_REASON)
         message(STATUS "uapp:                       ${UAPP_PDFIUM_REASON}")
+    endif()
+endif()
+
+if(UAPP_OCR_ENABLED)
+    message(STATUS "uapp: ocr/engine          = ON  (Tesseract ${UAPP_TESSERACT_VERSION}, "
+                   "${UAPP_TESSERACT_LIBRARY} — LOCAL DEV BOOTSTRAP, see third_party/tesseract/README.md)")
+    if(UAPP_TESSERACT_TESSDATA)
+        message(STATUS "uapp:                       tessdata for tests: ${UAPP_TESSERACT_TESSDATA}")
+    else()
+        message(STATUS "uapp:                       no tessdata found — recognition tests will skip")
+    endif()
+else()
+    message(STATUS "uapp: ocr/engine          = OFF (${UAPP_ENABLE_OCR})")
+    if(UAPP_TESSERACT_REASON)
+        message(STATUS "uapp:                       ${UAPP_TESSERACT_REASON}")
     endif()
 endif()
