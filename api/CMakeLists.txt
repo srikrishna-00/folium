@@ -40,13 +40,28 @@ add_library(uapp_server_routes STATIC
     src/routes_health.cpp
     src/routes_notes.cpp
     src/routes_search.cpp
-    src/routes_file.cpp)
+    src/routes_file.cpp
+    src/routes_blocks.cpp)
 
 target_link_libraries(uapp_server_routes
     PUBLIC  uapp_server_transport
             uapp::capi
             uapp::json
     PRIVATE uapp::compiler_options)
+
+# routes_pdf.cpp exists only when pdf-engine/ itself was built
+# (UAPP_PDF_ENABLED), same reason core/capi/CMakeLists.txt gates
+# capi_pdf.cpp — a library built without a vendored PDFium does not export
+# the uapp_pdf_* symbols this file calls. PUBLIC so uapp_server (which
+# links this target PRIVATEly) still receives the define: PRIVATE/PUBLIC on
+# the LINKING side controls propagation to whoever links the CONSUMER, not
+# whether the consumer itself sees it.
+if(UAPP_PDF_ENABLED)
+    target_sources(uapp_server_routes PRIVATE src/routes_pdf.cpp)
+    target_compile_definitions(uapp_server_routes PUBLIC UAPP_PDF_ENABLED=1)
+else()
+    target_compile_definitions(uapp_server_routes PUBLIC UAPP_PDF_ENABLED=0)
+endif()
 
 # uapp_server itself stays on the project's normal, strict posture
 # (uapp::compiler_options, -fno-exceptions included) — it never sees

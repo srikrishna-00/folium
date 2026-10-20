@@ -3,6 +3,11 @@
 namespace uapp::api {
 
 AppState::~AppState() {
+#if UAPP_PDF_ENABLED
+    for (auto& entry : pdf_documents) {
+        uapp_pdf_document_close(&entry.second.doc);
+    }
+#endif
     uapp_search_index_close(&search);
     uapp_document_service_close(&documents);
     uapp_note_service_close(&notes);

@@ -23,14 +23,36 @@
 // are fast, and request volume for a single-user deployment is not the
 // bottleneck a mutex would create.
 
+#include <cstdint>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "uapp/capi/uapp_blocks.h"
 #include "uapp/capi/uapp_notes.h"
 #include "uapp/capi/uapp_search.h"
 
+#if UAPP_PDF_ENABLED
+#include "uapp/capi/uapp_pdf.h"
+#endif
+
 namespace uapp::api {
+
+#if UAPP_PDF_ENABLED
+// PDFium parses lazily out of the caller's buffer for the handle's whole
+// life (uapp_pdf_document_open()'s own contract), so the backing bytes
+// must outlive the handle — this struct keeps both together under one id,
+// looked up by routes_pdf.cpp's /pdf/:id/... routes. Never evicted in this
+// slice: a long-running server accumulates one entry per uploaded PDF for
+// the life of the process, a real memory-growth caveat worth stating
+// rather than hiding, not yet a problem this single-user v1 needs to
+// solve.
+struct PdfDocumentEntry {
+    std::vector<std::uint8_t> buffer;
+    uapp_pdf_document_t*      doc = nullptr;
+};
+#endif
 
 struct AppState {
     std::mutex mutex;  // guards every handle below; take it before any capi call
@@ -38,6 +60,10 @@ struct AppState {
     uapp_note_service_t*     notes    = nullptr;
     uapp_document_service_t* documents = nullptr;
     uapp_search_index_t*     search   = nullptr;
+
+#if UAPP_PDF_ENABLED
+    std::unordered_map<std::string, PdfDocumentEntry> pdf_documents;
+#endif
 
     AppState()                            = default;
     AppState(const AppState&)             = delete;

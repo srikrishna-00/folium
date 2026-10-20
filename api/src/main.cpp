@@ -10,11 +10,16 @@
 
 #include "app_state.h"
 #include "auth.h"
+#include "routes_blocks.h"
 #include "routes_file.h"
 #include "routes_health.h"
 #include "routes_notes.h"
 #include "routes_search.h"
 #include "transport/http_server.h"
+
+#if UAPP_PDF_ENABLED
+#include "routes_pdf.h"
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -115,6 +120,10 @@ int main(int argc, char** argv) {
     uapp::api::register_notes_routes(server, state);
     uapp::api::register_search_routes(server, state);
     uapp::api::register_file_routes(server);
+    uapp::api::register_blocks_routes(server, state);
+#if UAPP_PDF_ENABLED
+    uapp::api::register_pdf_routes(server, state);
+#endif
 
     std::printf("uapp-server: listening on %s:%u (db: %s)\n", args.host.c_str(),
                static_cast<unsigned>(args.port), args.database_path.c_str());
