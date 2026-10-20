@@ -12,6 +12,87 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `tools/loadtest`: a real scale/stress harness, and the first measured numbers
+
+Three executables under `tools/loadtest/` that walk each engine up a 10 → 100 → 1 000 → 10 000 →
+100 000 ladder (or to the module's own `kMax*` ceiling, where that bites first) and record wall
+clock, per-operation latency, peak RSS and correctness at every point. **Full results and the
+prose that explains them: [`docs/load-test-results.md`](load-test-results.md).**
+
+Split into `uapp-loadtest-storage`, `uapp-loadtest-crypto` and `uapp-loadtest-ocr` rather than
+one binary, for two reasons that are both structural: the crypto and OCR link lines are
+deliberately narrow (`ocr/engine` must not be able to reach SQLite) and a single harness would
+be the one place in the tree breaking that; and `getrusage` peak RSS is a *per-process*
+high-water mark, so measuring a 19-megapixel OCR run in the same process as a 100 000-row
+database reports the maximum of the two and attributes it to neither. Each Argon2id profile also
+gets its own process, for exactly the same reason.
+
+**Nothing crashed, hung or returned a wrong answer** across ~1.3 million measured operations, and
+**every documented `kMax*` limit fired with its correct `Status`**: `PAGE_BLOCK_LIMIT_EXCEEDED`
+at 50 001 blocks, `BLOCK_DEPTH_EXCEEDED` at depth 65, `DATABASE_ROW_LIMIT_EXCEEDED` at row
+100 001, `CONVERSION_INPUT_TOO_LARGE` / `CONVERSION_OUTPUT_TOO_LARGE` at the 16 MiB caps,
+`CRYPTO_MESSAGE_TOO_LARGE` at 8 MiB + 1, and `OCR_IMAGE_SIZE_INVALID` past 20 Mpx.
+
+Nine findings are recorded in the report's §1; the ones that change design decisions:
+
+- **A 32-byte key costs 32 KiB of RSS** (`sodium_malloc` guard pages at a 16 KiB page size).
+  10 000 live `ContentKey`s is 314 MiB and 100 000 is 2.27 GiB — and `sodium_malloc` never
+  refuses, so the failure mode is an OOM kill rather than `CRYPTO_SECURE_ALLOC_FAILED`. Needs a
+  bounded key cache or a documented hard cap. (`load-test-results.md` §7.3)
+- **The Argon2id profiles' memory reservations are real, measured**: 66 MiB / 258 MiB /
+  1 028 MiB. The latter two breach the ADR-0002 Tier D 220 MB peak ceiling on their own, and
+  nothing currently prevents a caller asking for them on a phone. (§7.4)
+- **`fts_query.cpp`'s unconditional trailing `*` turns a selective query into an O(corpus)
+  scan.** The same selective token alone is flat at ~70 µs from N=10 to N=100 000; followed by
+  one common word it goes 130 µs → 3 459 µs. 48× at 100 k. (§3.1)
+- **Block reorder/move is O(blocks in the page)** — 86.6 ms to reorder and 240.9 ms to move one
+  block on a 50 000-block page — because sibling order is a dense contiguous `sort_index`
+  renumbered by two `UPDATE`s per move. Fractional indexing is the fix, and it is the same
+  ordering problem `core/sync/spike`'s Fugue work already addresses. (§4.1)
+- **Bounded inserts re-count on every insert**, making bulk ingest quadratic: `insert_block`
+  runs `COUNT(*)` over the page and `insert_row` over the database. (§4.2, §5)
+- **OCR latency is driven by glyph count, not pixel count, and is superlinear in glyphs.** At a
+  fixed 9.6 Mpx canvas: 11 chars = 93 ms, 4 400 chars = 7.28 s. A dense A4-equivalent page costs
+  7.3 s against the §2.4 budget's 2.5 s — on a workstation. **Risk PR-1 is confirmed** and its
+  residual should move to High until `tessdata_fast` numbers exist. (§8.2)
+- **`ocr/engine` does not leak**: 300 back-to-back recognitions on one handle grew RSS by
+  0.109 MiB total and the floor was flat from the 25 % mark; open/recognise/close growth
+  plateaus at ~4.8 MiB whether you run 30, 100 or 300 cycles. (§8.3)
+- **`core/conversion` and `core/search` are the two best-scaling modules.** Per-block conversion
+  cost *falls* with document size in both directions, and a broad ranked query over 100 000
+  mixed notes+blocks is 38.6 ms against a 150 ms budget. But `markdown.h`'s claim that 16 MiB is
+  "comfortably below the 256 MB mobile arena cap" cites the Tier B figure: measured against
+  Tier D's 96 MB, a 16 MiB write peaks at 95.0 MiB — and `grep -ri arena core/conversion/`
+  finds only that comment, so the arena is a document, not a mechanism. (§6)
+
+`pdf-engine/reader` is **not** covered (this run was configured `-DUAPP_ENABLE_PDF=OFF`); it is
+load-test shaped and is the first gap to fill. `file-engine/detection`, `ai/provider`/`ai/local`,
+`core/sync/spike` and `core/capi` are explained in §9 as modules this methodology does not
+meaningfully apply to, with reasons, rather than given invented numbers.
+
+#### Files
+
+```
+tools/loadtest/CMakeLists.txt         link lines, and why there are three of them
+tools/loadtest/loadtest_util.h        Timer, peak/current RSS, CSV emission, the scale ladder
+tools/loadtest/storage_loadtest.cpp   notes, blocks, unified search, database, conversion
+tools/loadtest/crypto_loadtest.cpp    AEAD, document throughput, key hierarchy, KDF, live keys
+tools/loadtest/ocr_loadtest.cpp       image-size ladder, density isolation, leak checks
+tools/CMakeLists.txt                  + add_subdirectory(loadtest)
+docs/load-test-results.md             the report
+```
+
+`uapp_loadtest_ocr` includes `tests/ocr/ocr_fixture.h` — a header-only constexpr Gray8 array
+whose ground truth was verified against the real `tesseract(1)` CLI — and tiles it to reach
+19 megapixels. That is a deliberate, narrow exception to "tools/ does not depend on tests/",
+argued in `tools/loadtest/CMakeLists.txt`: the alternative is inventing pixels nobody has
+confirmed are readable, or checking a 19 MB binary into the repository.
+
+No product code was changed. Two harness bugs that the product correctly rejected
+(`DATABASE_VALUE_MALFORMED` for a duplicated multi-select option, `DATABASE_VALUE_TYPE_MISMATCH`
+for a `MultiSelectValue` operand where `contains` wants one `SelectValue`) are recorded in the
+report's §5.1, because both are the validation boundary doing its job.
+
 ### Added — `ocr/engine`: printed-text OCR against a real Tesseract (spec §13)
 
 First code for spec section 13 (OCR Engine), scoped to the printed-text case. Tables, forms,
