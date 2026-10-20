@@ -234,7 +234,7 @@ std::string escape_text_line(std::string_view trimmed) {
     // An ordered-list shape is escaped at its delimiter, because CommonMark
     // has no escape for a digit: `\1. x` renders a literal backslash.
     ListMarker marker;
-    if (trimmed[0] != '\\' && parse_list_marker(trimmed, marker) &&
+    if (!trimmed.empty() && trimmed[0] != '\\' && parse_list_marker(trimmed, marker) &&
         marker.kind == ListKind::Ordered) {
         const std::size_t delim = ordered_delimiter_pos(trimmed);
         if (delim != std::string_view::npos) {
