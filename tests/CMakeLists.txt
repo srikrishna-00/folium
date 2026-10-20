@@ -632,6 +632,22 @@ if(UAPP_CRYPTO_ENABLED)
     target_link_libraries(uapp_crypto_tests
         PRIVATE uapp::security_crypto uapp::compiler_options)
 
+    # UAPP_SODIUM_VERSION_EXPECTED: what UappSodium.cmake's configure-time
+    # probe found on THIS machine, not the third_party/libsodium/VERSION pin
+    # hardcoded for the macOS Homebrew bootstrap. Real-world finding, not a
+    # guess: the pin is 1.0.22 (this project's own macOS dev host); Ubuntu's
+    # packaged libsodium is 1.0.18-2, confirmed by actually building inside
+    # an `ubuntu:latest` container. Asserting "always 1.0.22" would make this
+    # test fail on every non-pinned platform for a reason that has nothing to
+    # do with a real drift — which is a worse test, not a stricter one, since
+    # it stops distinguishing "the libsodium on THIS machine is not what THIS
+    # machine's own CMake run found" (a real bug: something changed between
+    # configure and link) from "this machine was never the pinned one in the
+    # first place" (expected, every CI platform except the one third_party/
+    # libsodium/VERSION documents). crypto_test.cpp now checks the former.
+    target_compile_definitions(uapp_crypto_tests PRIVATE
+        UAPP_SODIUM_VERSION_EXPECTED="${UAPP_SODIUM_VERSION}")
+
     add_test(NAME uapp.crypto.init    COMMAND uapp_crypto_tests "crypto.init")
     add_test(NAME uapp.crypto.vectors COMMAND uapp_crypto_tests "crypto.vectors")
     add_test(NAME uapp.crypto.aead    COMMAND uapp_crypto_tests "crypto.aead")

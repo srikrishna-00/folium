@@ -272,18 +272,33 @@ UAPP_TEST("crypto.init succeeds, is idempotent and reports a version") {
     UAPP_REQUIRE(version != nullptr);
     UAPP_CHECK_MSG(std::strcmp(version, "uninitialised") != 0, version);
 
-    // Assert the version the pin claims, rather than trusting
-    // third_party/libsodium/VERSION to describe what actually got linked.
-    // This is the runtime half of the pin; UappSodium.cmake prints the
-    // configure-time half. If this line fails after a dependency roll, the
-    // re-roll procedure in third_party/libsodium/VERSION was not followed —
-    // which is exactly the condition worth failing a build over, because
-    // security-model.md §12's CVE process needs a true answer to "which
-    // libsodium is in this binary?".
-    UAPP_CHECK_MSG(std::strcmp(version, "1.0.22") == 0,
+    // Assert the version CMake's OWN configure-time probe found on THIS
+    // machine (UAPP_SODIUM_VERSION_EXPECTED, from UappSodium.cmake via
+    // tests/CMakeLists.txt), not a hardcoded "1.0.22" — that literal is the
+    // macOS Homebrew dev host's pin in third_party/libsodium/VERSION, and a
+    // real, confirmed-by-building-in-a-container finding is that it is NOT
+    // what every platform links: Ubuntu's packaged libsodium is 1.0.18-2.
+    // Hardcoding the pin here would fail this test on every platform except
+    // the one it was recorded on, for a reason that has nothing to do with
+    // what this check actually exists to catch.
+    //
+    // What it DOES catch, portably: configure-time detection and link-time
+    // reality disagreeing on the SAME machine — e.g. a stale CMake cache
+    // after a library upgrade, or a build picking up a different libsodium
+    // than the one it detected. That is still exactly the condition
+    // security-model.md §12's CVE process needs a true answer to ("which
+    // libsodium is in THIS binary", checked against what the build itself
+    // believed it was linking), just checked the way that generalises across
+    // every platform's own locally-installed version instead of only one.
+#ifdef UAPP_SODIUM_VERSION_EXPECTED
+    UAPP_CHECK_MSG(std::strcmp(version, UAPP_SODIUM_VERSION_EXPECTED) == 0,
                    std::string("linked libsodium is ") + version +
-                       ", but third_party/libsodium/VERSION pins 1.0.22 — "
-                       "follow the re-roll procedure in that file");
+                       ", but CMake's own configure-time probe found " +
+                       UAPP_SODIUM_VERSION_EXPECTED +
+                       " — configure-time detection and link-time reality disagree on "
+                       "this machine, which usually means a stale CMake cache after a "
+                       "library upgrade");
+#endif
 }
 
 // ===========================================================================
