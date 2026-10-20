@@ -103,6 +103,20 @@ inline constexpr std::uint32_t kPageMagic          = 0x55415047u;  // 'UAPG'
 inline constexpr std::uint32_t kSearchIndexMagic   = 0x55415049u;  // 'UAPI'
 inline constexpr std::uint32_t kUnifiedResultMagic = 0x55415055u;  // 'UAPU'
 
+// ABI 0.4 adds uapp_crypto.h and uapp_keys.h: six more handle types, six more
+// distinct magic values, for the same reason as every group above — the
+// mistake a generated binding is most likely to make is passing the wrong
+// opaque pointer, and the four key-hierarchy handles in particular (recovery
+// secret, URK, WSK, document key) exist ONLY to make that mistake a checked
+// runtime error here, mirroring why key_hierarchy.h keeps them as four
+// distinct C++ types rather than one generic key.
+inline constexpr std::uint32_t kKeypairMagic          = 0x55415045u;  // 'UAPE'
+inline constexpr std::uint32_t kContentKeyMagic        = 0x5541504Bu;  // 'UAPK'
+inline constexpr std::uint32_t kRecoverySecretMagic    = 0x55415230u;  // 'UAR0'
+inline constexpr std::uint32_t kUserRootKeyMagic        = 0x55415231u;  // 'UAR1'
+inline constexpr std::uint32_t kWorkspaceKeyMagic       = 0x55415232u;  // 'UAR2'
+inline constexpr std::uint32_t kDocumentKeyMagic        = 0x55415233u;  // 'UAR3'
+
 /// Duplicate a NUL-terminated string into a buffer owned by the caller and
 /// released by uapp_free_string(). Returns nullptr on allocation failure.
 ///

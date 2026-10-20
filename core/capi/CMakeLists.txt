@@ -44,6 +44,20 @@ else()
     target_compile_definitions(uapp_capi PRIVATE UAPP_PDF_ENABLED=0)
 endif()
 
+# capi_crypto.cpp/capi_keys.cpp exist only when security/crypto and
+# security/keys themselves were built (UAPP_CRYPTO_ENABLED, resolved by the
+# root CMakeLists.txt from UAPP_ENABLE_CRYPTO). Unlike PDF, there is no
+# runtime "is this surface available" query to keep working either way: a
+# caller that built against a header exposing uapp_crypto_* in a library that
+# was built without it gets a link error against this static archive, same
+# as any other symbol that is simply absent — crypto has no story, the way
+# PDF does, of shipping the SURFACE unconditionally while varying whether the
+# underlying engine is present.
+if(UAPP_CRYPTO_ENABLED)
+    target_sources(uapp_capi PRIVATE src/capi_crypto.cpp src/capi_keys.cpp)
+    target_link_libraries(uapp_capi PRIVATE uapp::security_crypto uapp::security_keys)
+endif()
+
 # This target is the COMPOSITION ROOT for all three slices: it is where the
 # abstract NoteStore, BlockStore and SearchIndex ports are bound to their
 # concrete SQLite adapters, and it is the only reason a link to storage/sqlite

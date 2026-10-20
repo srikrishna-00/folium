@@ -755,6 +755,43 @@ if(UAPP_CRYPTO_ENABLED)
     set_tests_properties(uapp.keys.root uapp.keys.device uapp.keys.recovery
                          uapp.keys.workspace uapp.keys.document uapp.keys.chain
                          PROPERTIES TIMEOUT 300)
+
+    # ------------------------------------------------------------------------
+    # security/crypto + security/keys C ABI, exercised from C (ABI 0.4,
+    # uapp/capi/uapp_crypto.h + uapp/capi/uapp_keys.h).
+    #
+    # Same pattern as uapp_pdf_capi_tests above: two more executables,
+    # conditional for the same reason — the ABI functions do not exist in a
+    # library built without libsodium, so these files are not even compiled
+    # when UAPP_CRYPTO_ENABLED is false.
+    #
+    # crypto_capi_test.c's HKDF and Argon2id cases re-check the SAME
+    # externally-verified golden values crypto_test.cpp above does (copied
+    # verbatim, see that file's own comment for provenance), now reached
+    # ONLY through the C ABI — the M2 verification step this pair of
+    # executables exists to satisfy.
+    # ------------------------------------------------------------------------
+    add_executable(uapp_crypto_capi_tests capi/crypto_capi_test.c)
+    target_include_directories(uapp_crypto_capi_tests PRIVATE capi)
+    target_link_libraries(uapp_crypto_capi_tests PRIVATE uapp::capi uapp::compiler_options)
+    set_target_properties(uapp_crypto_capi_tests PROPERTIES LINKER_LANGUAGE CXX)
+
+    add_test(NAME uapp.capi.crypto.slice    COMMAND uapp_crypto_capi_tests "slice:")
+    add_test(NAME uapp.capi.crypto.boundary COMMAND uapp_crypto_capi_tests "boundary:")
+
+    set_tests_properties(uapp.capi.crypto.slice uapp.capi.crypto.boundary
+                         PROPERTIES TIMEOUT 120)
+
+    add_executable(uapp_keys_capi_tests capi/keys_capi_test.c)
+    target_include_directories(uapp_keys_capi_tests PRIVATE capi)
+    target_link_libraries(uapp_keys_capi_tests PRIVATE uapp::capi uapp::compiler_options)
+    set_target_properties(uapp_keys_capi_tests PROPERTIES LINKER_LANGUAGE CXX)
+
+    add_test(NAME uapp.capi.keys.slice    COMMAND uapp_keys_capi_tests "slice:")
+    add_test(NAME uapp.capi.keys.boundary COMMAND uapp_keys_capi_tests "boundary:")
+
+    set_tests_properties(uapp.capi.keys.slice uapp.capi.keys.boundary
+                         PROPERTIES TIMEOUT 120)
 endif()
 
 # ---------------------------------------------------------------------------

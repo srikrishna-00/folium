@@ -218,11 +218,16 @@ static void test_enum_range_is_pinned_both_ways(void) {
     CHECK(strcmp(uapp_status_code(UAPP_STATUS_BLOCK_MALFORMED), "UNEXPECTED") != 0);
     CHECK(strcmp(uapp_status_code(UAPP_STATUS_BLOCK_TYPE_UNSUPPORTED), "UNEXPECTED") != 0);
 
-    /* ABI 0.3 (file+pdf landed after this test was first written), and a 0.1
-     * caller still runs: every bump so far has been additive. */
-    CHECK(uapp_abi_version_major() == 0u);
-    CHECK(uapp_abi_version_minor() == 3u);
-    CHECK_STR(uapp_abi_version_string(), "0.3");
+    /* Checked against the header's own macros rather than a hardcoded
+     * "0.3"/3u literal -- this test was first written at ABI 0.3 and that
+     * literal already went stale once, at the 0.4 bump crypto/keys landed
+     * in. The macros are what the next additive bump will also update, so
+     * this assertion is "the library reports the version its own header
+     * claims", which stays true across every additive minor bump, rather
+     * than "the library is still exactly 0.3" once more. */
+    CHECK(uapp_abi_version_major() == (uint32_t)UAPP_ABI_VERSION_MAJOR);
+    CHECK(uapp_abi_version_minor() == (uint32_t)UAPP_ABI_VERSION_MINOR);
+    CHECK_STR(uapp_abi_version_string(), UAPP_ABI_VERSION_STRING);
     CHECK(UAPP_ABI_ASSERT_COMPATIBLE() == UAPP_TRUE);
     CHECK(uapp_abi_is_compatible(0u, 1u) == UAPP_TRUE);
     /* A caller built against a NEWER minor than this library has is the

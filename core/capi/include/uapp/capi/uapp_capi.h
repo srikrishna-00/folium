@@ -158,10 +158,28 @@ extern "C" {
  *        which is always present. Folding "PDF is missing" into the version
  *        would have been wrong twice over: it is not a version difference, and
  *        a binding needs a runtime answer, not a compile-time one.
+ *
+ *   0.4  ADDITIVE. uapp_crypto.h (security/crypto) and uapp_keys.h
+ *        (security/keys) appear, and with them the 10xx crypto and 11xx key
+ *        codes in uapp_status_t. Deferred since 0.1 on the explicit
+ *        condition crypto.h's NOT IMPLEMENTED item 6 names -- "the shape of
+ *        these functions will change when the key HIERARCHY above them
+ *        exists" -- which landed on 2026-10-20 as security/keys. Same
+ *        additive reasoning and minor-bump conclusion as 0.2 and 0.3: no
+ *        existing function signature, enum value or semantic changed.
+ *
+ *        THE ONE THING THIS SURFACE DOES NOT DO: there is still no C
+ *        accessor for a ContentKey's or any derived key's raw bytes.
+ *        uapp_crypto_keypair_t exposes only its PUBLIC half; every secret key
+ *        type crosses this boundary only as an opaque handle consumed by
+ *        seal/open/wrap/unwrap, never read. A binding that needs the bytes
+ *        is asking the wrong question of this ABI by design -- see
+ *        secure_bytes.h's own limits for why no C accessor would be safe to
+ *        add later either.
  */
 #define UAPP_ABI_VERSION_MAJOR  0
-#define UAPP_ABI_VERSION_MINOR  3
-#define UAPP_ABI_VERSION_STRING "0.3"
+#define UAPP_ABI_VERSION_MINOR  4
+#define UAPP_ABI_VERSION_STRING "0.4"
 
 /* Boolean across the boundary. Not <stdbool.h>'s bool: its size is
  * implementation-defined, and an ABI cannot afford that. */
@@ -286,6 +304,43 @@ typedef enum uapp_status {
     /* C ABI boundary only (9xx) -- no uapp::Status counterpart */
     UAPP_STATUS_OUT_OF_MEMORY = 900, /* a boundary allocation failed; nothing was changed */
     UAPP_STATUS_UNEXPECTED    = 901, /* the catch-all; see the note below */
+
+    /* security/crypto (10xx) -- added in ABI 0.4 alongside uapp_crypto.h, on
+     * the SAME "module grew a code, boundary now reaches it" test applied
+     * for the sixth time in capi_common.cpp. Deferred since ABI 0.1 pending
+     * the key HIERARCHY (security/keys) existing, per crypto.h's own NOT
+     * IMPLEMENTED item 6 -- it landed, so this is minted now, not a reversal.
+     *
+     * CryptoAuthFailed is deliberately the ONE code here for wrong key,
+     * tampered ciphertext, truncated input, substituted nonce AND mismatched
+     * AAD. This is the opposite of the ai/§17 consent codes' rule below, and
+     * for the opposite reason: splitting it would hand a remote peer a
+     * decryption oracle. See uapp/status.h and crypto.h for the full
+     * argument; it must never be split by a future minor bump. */
+    UAPP_STATUS_CRYPTO_NOT_INITIALISED    = 1000,
+    UAPP_STATUS_CRYPTO_RANDOM_FAILED      = 1001,
+    UAPP_STATUS_CRYPTO_KEY_INVALID        = 1002,
+    UAPP_STATUS_CRYPTO_AUTH_FAILED        = 1003, /* wrong key / tampered / truncated / bad nonce / bad AAD -- ONE code, see above */
+    UAPP_STATUS_CRYPTO_SEALED_BLOB_BAD    = 1004,
+    UAPP_STATUS_CRYPTO_MESSAGE_TOO_LARGE  = 1005,
+    UAPP_STATUS_CRYPTO_KDF_FAILED         = 1006,
+    UAPP_STATUS_CRYPTO_SECURE_ALLOC_FAILED = 1007,
+    UAPP_STATUS_CRYPTO_PASSPHRASE_TOO_SHORT = 1008,
+
+    /* security/keys (11xx) -- added in ABI 0.4 alongside uapp_keys.h, same
+     * commit as the crypto block above: the hierarchy and the primitives it
+     * sits on are minted together, since uapp_keys.h's handles are built
+     * directly out of uapp_crypto.h's ContentKey wrapper.
+     *
+     * Deliberately ONLY three codes, not a vocabulary for "wrong device" /
+     * "wrong passphrase" / "tampered record" -- those are
+     * UAPP_STATUS_CRYPTO_AUTH_FAILED, unconditionally, for the same oracle
+     * reason stated above. These three are plaintext-metadata checks (record
+     * version, record role, scope id shape), never a judgement over secret
+     * material, which is exactly why they ARE allowed to be distinct. */
+    UAPP_STATUS_KEY_RECORD_VERSION_UNSUPPORTED = 1100,
+    UAPP_STATUS_KEY_RECORD_ROLE_MISMATCH       = 1101,
+    UAPP_STATUS_KEY_SCOPE_ID_INVALID           = 1102,
 
     /*
      * Not a status. It pins the enum's width and its representable range, and

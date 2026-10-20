@@ -69,6 +69,18 @@ UAPP_CAPI_ASSERT_CODE(PdfRenderFailed, UAPP_STATUS_PDF_RENDER_FAILED);
 UAPP_CAPI_ASSERT_CODE(PdfRenderSizeInvalid, UAPP_STATUS_PDF_RENDER_SIZE_INVALID);
 UAPP_CAPI_ASSERT_CODE(PdfBufferTooSmall, UAPP_STATUS_PDF_BUFFER_TOO_SMALL);
 UAPP_CAPI_ASSERT_CODE(PdfNotOpen, UAPP_STATUS_PDF_NOT_OPEN);
+UAPP_CAPI_ASSERT_CODE(CryptoNotInitialised, UAPP_STATUS_CRYPTO_NOT_INITIALISED);
+UAPP_CAPI_ASSERT_CODE(CryptoRandomFailed, UAPP_STATUS_CRYPTO_RANDOM_FAILED);
+UAPP_CAPI_ASSERT_CODE(CryptoKeyInvalid, UAPP_STATUS_CRYPTO_KEY_INVALID);
+UAPP_CAPI_ASSERT_CODE(CryptoAuthFailed, UAPP_STATUS_CRYPTO_AUTH_FAILED);
+UAPP_CAPI_ASSERT_CODE(CryptoSealedBlobBad, UAPP_STATUS_CRYPTO_SEALED_BLOB_BAD);
+UAPP_CAPI_ASSERT_CODE(CryptoMessageTooLarge, UAPP_STATUS_CRYPTO_MESSAGE_TOO_LARGE);
+UAPP_CAPI_ASSERT_CODE(CryptoKdfFailed, UAPP_STATUS_CRYPTO_KDF_FAILED);
+UAPP_CAPI_ASSERT_CODE(CryptoSecureAllocFailed, UAPP_STATUS_CRYPTO_SECURE_ALLOC_FAILED);
+UAPP_CAPI_ASSERT_CODE(CryptoPassphraseTooShort, UAPP_STATUS_CRYPTO_PASSPHRASE_TOO_SHORT);
+UAPP_CAPI_ASSERT_CODE(KeyRecordVersionUnsupported, UAPP_STATUS_KEY_RECORD_VERSION_UNSUPPORTED);
+UAPP_CAPI_ASSERT_CODE(KeyRecordRoleMismatch, UAPP_STATUS_KEY_RECORD_ROLE_MISMATCH);
+UAPP_CAPI_ASSERT_CODE(KeyScopeIdInvalid, UAPP_STATUS_KEY_SCOPE_ID_INVALID);
 
 #undef UAPP_CAPI_ASSERT_CODE
 
@@ -257,58 +269,44 @@ uapp_status_t to_c_status(Status s) noexcept {
             return UAPP_STATUS_UNEXPECTED;
 
         // ===================================================================
-        // security/crypto (spec sections 23/38, ADR-0002 decision 1): NOT
-        // MINTED — the same test, for a sixth time, and this time the answer
-        // to the second question is "no, AND IT MUST STAY NO FOR LONGER".
+        // security/crypto (spec sections 23/38, ADR-0002 decision 1): NOW
+        // MAPPED TO REAL CODES, ABI 0.4 — the SAME reversal the blocks/search
+        // commit made for a fifth-and-sixth time, not a new precedent.
         // ===================================================================
-        // The two questions are: did the core grow a code, and can a C caller
-        // reach it. The core grew nine; a C caller can reach none, because
-        // security/crypto has NO ABI header — and unlike blocks, search,
-        // file-engine, pdf-engine, conversion and database, this one is not
-        // merely "module first, frozen boundary after".
+        // Deferred since ABI 0.1 on the STRONGER argument recorded in
+        // security/crypto/include/uapp/crypto/crypto.h's NOT IMPLEMENTED item
+        // 6: "the shape of these functions will change when the key
+        // HIERARCHY above them exists." That hierarchy is security/keys, and
+        // it landed on 2026-10-20 — the condition that kept this flattened is
+        // satisfied, so uapp_crypto.h and uapp_keys.h mint both groups in the
+        // same commit.
         //
-        // The crypto ABI is deliberately deferred on a STRONGER argument,
-        // recorded in security/crypto/include/uapp/crypto/crypto.h under NOT
-        // IMPLEMENTED item 6: the shape of these functions will change when
-        // the key HIERARCHY above them exists (Recovery Secret -> URK -> WSK
-        // -> document key -> per-file key, security-model.md §5A.1). An ABI
-        // is a promise, and freezing `uapp_crypto_seal(key, pt, aad)` before
-        // we know whether a caller is handed a CEK, a document id, or an
-        // opaque key handle backed by the Secure Enclave would commit the
-        // boundary to the wrong one of those three. Flattening to UNEXPECTED
-        // costs nothing today because nothing can produce one of these
-        // through the boundary.
-        //
-        // One of the nine deserves a specific note for whoever mints these
-        // later. CryptoAuthFailed is intentionally the SINGLE code for wrong
-        // key, tampered ciphertext, truncated input, substituted nonce and
-        // mismatched AAD (see uapp/status.h). When a uapp_crypto.h exists,
-        // that must survive into the C vocabulary as ONE constant. Splitting
-        // it into UAPP_STATUS_CRYPTO_WRONG_KEY / _TAMPERED / _TRUNCATED would
-        // look like a courtesy to binding authors and would in fact be a
-        // decryption oracle frozen into a stable interface — the one
-        // flattening in this file that is a security requirement rather than
-        // a versioning convenience.
-        case Status::CryptoNotInitialised:
-        case Status::CryptoRandomFailed:
-        case Status::CryptoKeyInvalid:
-        case Status::CryptoAuthFailed:
-        case Status::CryptoSealedBlobBad:
-        case Status::CryptoMessageTooLarge:
-        case Status::CryptoKdfFailed:
-        case Status::CryptoSecureAllocFailed:
-        case Status::CryptoPassphraseTooShort:
-        // The key HIERARCHY layer's three codes (security/keys,
-        // security-model.md §5A.1) flatten here for exactly the same reason
-        // and under the same argument: there is no uapp_keys.h, and the
-        // shape of a C-ABI key handle is the open question that keeps it
-        // that way. Note that "wrong device", "wrong passphrase" and
-        // "tampered record" are NOT among them — they are CryptoAuthFailed
-        // above, and must stay one constant on the other side of any future
-        // boundary for the oracle reason stated there.
+        // CryptoAuthFailed stays the SINGLE code for wrong key, tampered
+        // ciphertext, truncated input, substituted nonce and mismatched AAD
+        // (uapp/status.h) — splitting it would be a decryption oracle frozen
+        // into a stable interface, the one flattening rule in this file that
+        // is a security requirement rather than a versioning convenience, and
+        // the ABI 0.4 note in uapp_capi.h repeats it for exactly that reason.
+        case Status::CryptoNotInitialised:   return UAPP_STATUS_CRYPTO_NOT_INITIALISED;
+        case Status::CryptoRandomFailed:     return UAPP_STATUS_CRYPTO_RANDOM_FAILED;
+        case Status::CryptoKeyInvalid:       return UAPP_STATUS_CRYPTO_KEY_INVALID;
+        case Status::CryptoAuthFailed:       return UAPP_STATUS_CRYPTO_AUTH_FAILED;
+        case Status::CryptoSealedBlobBad:    return UAPP_STATUS_CRYPTO_SEALED_BLOB_BAD;
+        case Status::CryptoMessageTooLarge:  return UAPP_STATUS_CRYPTO_MESSAGE_TOO_LARGE;
+        case Status::CryptoKdfFailed:        return UAPP_STATUS_CRYPTO_KDF_FAILED;
+        case Status::CryptoSecureAllocFailed:   return UAPP_STATUS_CRYPTO_SECURE_ALLOC_FAILED;
+        case Status::CryptoPassphraseTooShort:  return UAPP_STATUS_CRYPTO_PASSPHRASE_TOO_SHORT;
+
+        // security/keys (security-model.md §5A.1): minted in the same commit,
+        // for the same reason. "Wrong device", "wrong passphrase" and
+        // "tampered record" are deliberately NOT among these three — they are
+        // CryptoAuthFailed above, and stay one constant across this boundary
+        // too, for the same oracle reason.
         case Status::KeyRecordVersionUnsupported:
-        case Status::KeyRecordRoleMismatch:
-        case Status::KeyScopeIdInvalid:
+            return UAPP_STATUS_KEY_RECORD_VERSION_UNSUPPORTED;
+        case Status::KeyRecordRoleMismatch: return UAPP_STATUS_KEY_RECORD_ROLE_MISMATCH;
+        case Status::KeyScopeIdInvalid:     return UAPP_STATUS_KEY_SCOPE_ID_INVALID;
+
         // ===================================================================
         // ai/provider + ai/local (spec §17): NOT MINTED — the same two
         // questions for a seventh time, with the same answer as crypto's and
@@ -498,6 +496,18 @@ const char* uapp_status_code(uapp_status_t status) {
         case UAPP_STATUS_PDF_RENDER_SIZE_INVALID:
         case UAPP_STATUS_PDF_BUFFER_TOO_SMALL:
         case UAPP_STATUS_PDF_NOT_OPEN:
+        case UAPP_STATUS_CRYPTO_NOT_INITIALISED:
+        case UAPP_STATUS_CRYPTO_RANDOM_FAILED:
+        case UAPP_STATUS_CRYPTO_KEY_INVALID:
+        case UAPP_STATUS_CRYPTO_AUTH_FAILED:
+        case UAPP_STATUS_CRYPTO_SEALED_BLOB_BAD:
+        case UAPP_STATUS_CRYPTO_MESSAGE_TOO_LARGE:
+        case UAPP_STATUS_CRYPTO_KDF_FAILED:
+        case UAPP_STATUS_CRYPTO_SECURE_ALLOC_FAILED:
+        case UAPP_STATUS_CRYPTO_PASSPHRASE_TOO_SHORT:
+        case UAPP_STATUS_KEY_RECORD_VERSION_UNSUPPORTED:
+        case UAPP_STATUS_KEY_RECORD_ROLE_MISMATCH:
+        case UAPP_STATUS_KEY_SCOPE_ID_INVALID:
         case UAPP_STATUS_FORCE_INT32:
         case UAPP_STATUS_FORCE_INT32_MIN:
             break;
@@ -553,6 +563,18 @@ const char* uapp_status_message(uapp_status_t status) {
         case UAPP_STATUS_PDF_RENDER_SIZE_INVALID:
         case UAPP_STATUS_PDF_BUFFER_TOO_SMALL:
         case UAPP_STATUS_PDF_NOT_OPEN:
+        case UAPP_STATUS_CRYPTO_NOT_INITIALISED:
+        case UAPP_STATUS_CRYPTO_RANDOM_FAILED:
+        case UAPP_STATUS_CRYPTO_KEY_INVALID:
+        case UAPP_STATUS_CRYPTO_AUTH_FAILED:
+        case UAPP_STATUS_CRYPTO_SEALED_BLOB_BAD:
+        case UAPP_STATUS_CRYPTO_MESSAGE_TOO_LARGE:
+        case UAPP_STATUS_CRYPTO_KDF_FAILED:
+        case UAPP_STATUS_CRYPTO_SECURE_ALLOC_FAILED:
+        case UAPP_STATUS_CRYPTO_PASSPHRASE_TOO_SHORT:
+        case UAPP_STATUS_KEY_RECORD_VERSION_UNSUPPORTED:
+        case UAPP_STATUS_KEY_RECORD_ROLE_MISMATCH:
+        case UAPP_STATUS_KEY_SCOPE_ID_INVALID:
         case UAPP_STATUS_FORCE_INT32:
         case UAPP_STATUS_FORCE_INT32_MIN:
             break;
