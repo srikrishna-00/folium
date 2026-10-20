@@ -167,10 +167,64 @@ Device Keystore / Secure Enclave  (hardware-backed, non-exportable)
   is bound into the nonce **and** the AAD so chunks cannot be reordered or spliced between files.
 - **AAD** for each chunk = `blob_id || chunk_index || total_chunks`. This prevents truncation
   and cross-file substitution, which naive chunked encryption allows.
+
+> **Two nonce strategies, and only one of them is implemented (2026-10-17).** The chunked-blob
+> path above uses a **deterministic** nonce, `HKDF(file_key, chunk_index)`, whose uniqueness
+> invariant is "the chunk index is unique within a file and the file key is unique per blob".
+> That is the right design *there*, because a chunk index is derivable rather than stored and
+> random access to page 300 of a 500 MB PDF needs it. **It is NOT IMPLEMENTED.**
+>
+> What `security/crypto` implements is the other case — sealing one block, page or chunk under
+> a CEK — and it uses a **fresh random 192-bit nonce generated inside `seal()`, which the
+> caller cannot supply, influence or reuse.** There is no `seal_with_nonce()` overload, not
+> even a test-only one, because an API that accepts a nonce cannot prevent its misuse by
+> documentation. XChaCha20-Poly1305's 192-bit nonce is what makes that stateless design sound:
+> collision probability is `< q²/2^193`, i.e. `2^-129` at `2^32` encryptions under one key.
+> (AES-GCM's 96-bit IV reaches `~2^-33` at the same volume, which is why NIST SP 800-38D caps
+> a random-IV GCM key at `2^32` invocations. The primitive choice and the nonce strategy are
+> one decision, not two.)
+>
+> **When the chunked path lands it must be a separately-named entry point whose caller owns
+> the chunk index — never a nonce parameter bolted onto `seal()`.** The full argument,
+> including why a counter is more robust to RNG failure but needs durable state this layer
+> must not invent, is in `security/crypto/include/uapp/crypto/crypto.h`.
 - **Key rotation:** the DEK-wrap key rotates on password change; blob keys are content-derived
   and therefore rotate only via re-encryption (a background job, post-1.0).
-- **Nothing derives a key from a password on the client without Argon2id** (`opslimit=4`,
-  `memlimit=256 MiB` locally, where we can afford it).
+- **Nothing derives a key from a password on the client without Argon2id** (~~`opslimit=4`,
+  `memlimit=256 MiB` locally, where we can afford it~~ — **CORRECTED 2026-10-17, see below**).
+
+> **Correction (2026-10-17): the parameters above cannot run on our own device floor.**
+> `adr/0002` decision 3 fixes the floor at **2 GB RAM / iOS 15+ / Android 8+**. A 256 MiB
+> transient Argon2 allocation on top of the app's working set is a foreground low-memory kill
+> on both platforms. The clause "where we can afford it" was written *before* the floor was
+> fixed; once it was, the answer became no, and this paragraph was not revisited.
+>
+> **Implemented parameters** (`security/crypto`, `KdfProfile::MobileInteractive`):
+> **`opslimit = 3`, `memlimit = 64 MiB`**, algorithm pinned to
+> `crypto_pwhash_ALG_ARGON2ID13` explicitly rather than `ALG_DEFAULT` (which changed meaning
+> from Argon2i to Argon2id at libsodium 1.0.15 — a derived key whose algorithm depends on the
+> linked version is a key that silently stops deriving after a dependency roll).
+>
+> This is libsodium's **own documented procedure** applied to our constraint, not an invented
+> pair: "set `memlimit` to the amount of memory you want to reserve… then set `opslimit` to
+> `3`". 64 MiB is libsodium's INTERACTIVE preset and the largest of its three that fits the
+> floor. Measured 61 ms on an Apple M4; estimated 0.4-0.6 s on a floor-tier device, which is
+> inside the 1 s online budget libsodium's own guidance names.
+>
+> **The cost, stated plainly:** a 4x cut in `memlimit` is a 4x cut in an offline attacker's
+> memory cost per guess — the exact dimension Argon2 exists to raise. It is accepted because
+> (a) the alternative is a passphrase path that cannot run on the devices we committed to, and
+> (b) §5A.4 deliberately does not rest recovery on a user-chosen passphrase: the root of trust
+> is a generated 24-word phrase carrying ~256 bits, so Argon2's work factor is defence in
+> depth here rather than the only defence.
+>
+> **Still owed:** measure on real floor-tier hardware rather than extrapolating from a desktop
+> multiplier (same class of gap as SP-3/SP-4's Tier D re-runs). `docs/spikes/SP-9-findings.md`
+> §5 carries the full argument and the measurements.
+>
+> A `DesktopModerate` profile (ops=3, 256 MiB) exists in the API for desktop-only keys. It
+> **must not** be used for any key that also has to be derivable on mobile: the cost profile is
+> part of a derived key's identity and must be stored alongside the salt.
 
 ---
 
@@ -182,6 +236,33 @@ The cryptography here is the easy part — libsodium does it. **The hard part is
 distribution across devices and what happens when a device is lost**, and that is where this
 section spends its length. Anything written here that sounds like hand-waving should be
 treated as an unresolved design item, not as a decision.
+
+> **Dependency status (2026-10-17).** "libsodium does it" was, until this date, the entire
+> extent of the library decision: no licence review, no pin, no `THIRD_PARTY_NOTICES` row and
+> no mobile-distribution analysis existed, all four of which §12 requires before a dependency
+> lands. `docs/spikes/SP-9-findings.md` supplies them and the library is now vetted,
+> pinned (`third_party/libsodium/`) and integrated (`THIRD_PARTY_NOTICES` SECTION 0).
+>
+> Two results from that vetting belong here rather than only in the spike:
+>
+> 1. **The licence is a non-event.** ISC, verified against the installed bytes. No
+>    static-vs-dynamic distinction, so static linking into a closed-source App Store binary is
+>    unambiguously permitted; attribution is the only obligation.
+> 2. **The real mobile constraint is US export control, and it has no owner.** Bundling a
+>    crypto library that provides *content confidentiality* makes the app's encryption
+>    **non-exempt** for Apple's purposes (`ITSAppUsesNonExemptEncryption = YES`), which pulls
+>    the app into EAR Category 5 Part 2 and requires an annual self-classification report to
+>    BIS and the NSA encryption coordinator, plus a France declaration. **This follows from
+>    `adr/0002` decision 1, not from the choice of libsodium** — any library encrypting user
+>    content lands in the same place. §12 below covers supply chain and says nothing about
+>    export control; this is new risk **R-33** and it needs counsel, not engineering.
+>
+> **What exists in code today is the PRIMITIVES layer only** (`security/crypto`): key
+> generation, AEAD, key wrapping between two device keypairs, the passphrase KDF, and secure
+> memory. Everything else in this section — the hierarchy in §5A.1, the enrolment in §5A.2,
+> the rotation in §5A.3 — is **NOT IMPLEMENTED**. The header
+> `security/crypto/include/uapp/crypto/crypto.h` lists the gap item by item at the point
+> where a reader would otherwise assume it had been handled.
 
 ### 5A.1 Extended key hierarchy
 
@@ -233,6 +314,32 @@ bytes.
 > substitutes its own public key for the new device's and receives the workspace keys. This
 > is the single most important user-facing step in the whole E2EE design, and it is the one
 > most likely to be cut for onboarding-funnel reasons. **It must not be.**
+
+> **OPEN DESIGN QUESTION raised 2026-10-17 (`spikes/SP-9-findings.md` §7 F-5): does this
+> wrap need to authenticate the SENDER?**
+>
+> The `crypto_box_seal` named above uses an **ephemeral** sender keypair, so it authenticates
+> **nobody** — the new device learns only that *someone* holding its public key sealed the
+> bundle. That is a real property (it gives the sender anonymity), but this document does not
+> say it was chosen deliberately, and T-305 is "a malicious/compromised device pushes poisoned
+> sync data", which an unauthenticated key-wrap channel is a way to do.
+>
+> `security/crypto`'s `wrap_content_key()` therefore implements the **authenticated** variant:
+> `crypto_kx` (X25519 + BLAKE2b over *both* static public keys) deriving a directional KEK,
+> then XChaCha20-Poly1305 over the key being wrapped, with both public keys bound into the
+> AAD. The recipient can tell which device sealed it, and the rx/tx split means a wrapped key
+> cannot be replayed back at its sender. It gives up anonymity.
+>
+> **A human must decide which property enrolment wants.** If both are wanted in different
+> places, the anonymous `crypto_box_seal` form is an **additional** function, never a
+> replacement — the two have different security properties and picking one by accident is how
+> protocols break.
+>
+> Separately, and asserted in `tests/crypto` so it cannot be forgotten: libsodium rejects a
+> peer X25519 public key only when the agreement output is all-zero (the small-order
+> subgroup). A non-canonical all-`0xff` encoding is accepted. So "the library validates the
+> peer key" is narrower than it sounds, and binding a public key to a *device identity*
+> remains entirely the job of the short-code check above.
 
 **(2) Recovery-phrase enrolment.** The user enters the 24-word phrase on the new device,
 which re-derives the URK and unwraps the workspace keys directly from the server-stored
@@ -465,9 +572,31 @@ a copy the user already shared.
 | Dependency CVE scan | daily | blocking on Critical |
 | Secret scanning | every PR | blocking |
 | Authorisation matrix test (every endpoint × every role × cross-tenant id) | every PR | blocking |
-| Crypto unit tests against RFC/NIST vectors | every PR | blocking |
+| Crypto unit tests against RFC/NIST vectors | every PR | blocking — **partially live since 2026-10-17**, see below |
 | External penetration test | before v1.0, then annually | release gate |
+| **Export-control self-classification report to BIS/NSA (R-33, §5A)** | **before first submission, then annually** | **release gate — NOT an engineering task, see `spikes/SP-9-findings.md` §4.2** |
 | Threat-model review | each phase boundary | — |
+
+**On the "crypto unit tests against RFC/NIST vectors" row, now that it has an implementation
+to be blocking on.** `tests/crypto` (7 ctest entries, 27 cases) runs on every build where
+`UAPP_ENABLE_CRYPTO` resolves ON, in both Debug and Debug+ASan/UBSan. External published
+vectors cover two of the three layers:
+
+- **AEAD** — `draft-irtf-cfrg-xchacha-03` §A.3.1, driven through the real decrypt path, plus
+  one-bit mutations in both ciphertext and tag, plus wrong-AAD and no-AAD rejection.
+- **X25519** — RFC 7748 §6.1's Alice/Bob keypairs used as real device keys through the real
+  wrap/unwrap path, both directions, plus small-order public-key rejection.
+- **Argon2id — NO external vector is possible**, and this is structural rather than an
+  omission: RFC 9106's published vectors all use parallelism `p = 4` and libsodium's
+  `crypto_pwhash` hardcodes `p = 1`, so they are unreachable through the API. Golden
+  regression vectors are used instead and labelled as such. What they catch is the failure
+  that matters: a derivation that silently changed across a dependency roll would lock every
+  existing user out of their own data (§5A.4). See `spikes/SP-9-findings.md` §7 F-6.
+
+A round-trip test is *not* what satisfies this row. `seal()` followed by `open()` passes for
+any pair of mutually-inverse functions, including a wrapper that silently drops the AAD or
+confuses XChaCha20 with the original ChaCha20 — both invisible to a round trip and
+catastrophic against a real attacker.
 
 ## 14. Accepted risks (explicit)
 

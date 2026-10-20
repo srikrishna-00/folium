@@ -144,6 +144,33 @@ enum class Status : std::int32_t {
     DatabaseViewKindUnsupported       = 913,  ///< a section 15 view kind that is NOT IMPLEMENTED
     DatabaseFilterOperatorUnsupported = 914,  ///< operator is not legal for that property type
     DatabaseSchemaMalformed           = 915,  ///< the schema itself is structurally invalid
+
+    // --- cryptographic primitives (10xx) ----------------------------------
+    // security/crypto — the libsodium-backed primitives layer behind
+    // ADR-0002 decision 1 ("E2EE from v1.0") and security-model.md §5/§5A.
+    // This block covers the PRIMITIVES only: key generation, AEAD, key
+    // wrapping, passphrase KDF. The E2EE *protocol* (device enrolment, WSK
+    // rotation, per-document consent, sealed sync payloads) is NOT
+    // IMPLEMENTED and gets NO codes here, for the reason the 7xx/8xx blocks
+    // state: a code with no code path behind it is a promise this enum
+    // cannot keep.
+    //
+    // NOTE THE DELIBERATE COARSENESS OF CryptoAuthFailed. Wrong key,
+    // flipped ciphertext bit, truncated tag, swapped nonce and mismatched
+    // AAD all return the SAME code, because they are the same event —
+    // "this ciphertext did not authenticate under this key" — and because
+    // reporting *which* of them happened hands an attacker a distinguishing
+    // oracle. This is the one place in the enum where being less specific
+    // is the security requirement, not a shortcut.
+    CryptoNotInitialised   = 1000,  ///< crypto::init() has not run, or it failed
+    CryptoRandomFailed     = 1001,  ///< the platform CSPRNG could not be used
+    CryptoKeyInvalid       = 1002,  ///< key/public-key wrong size, all-zero, or low-order
+    CryptoAuthFailed       = 1003,  ///< AEAD tag did not verify — see the note above
+    CryptoSealedBlobBad    = 1004,  ///< sealed blob is structurally unusable (short/absent nonce)
+    CryptoMessageTooLarge  = 1005,  ///< plaintext or AAD past this build's AEAD limit
+    CryptoKdfFailed        = 1006,  ///< Argon2id could not run (almost always: out of memory)
+    CryptoSecureAllocFailed = 1007, ///< sodium_malloc() refused — guarded pages exhausted
+    CryptoPassphraseTooShort = 1008,///< passphrase below kMinPassphraseBytes
 };
 
 /// True iff the operation succeeded. Prefer `if (!uapp::is_ok(s))` over

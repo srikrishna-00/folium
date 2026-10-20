@@ -1,9 +1,9 @@
 THIRD PARTY NOTICES
 ===================
 
-Status:  Phase 1 — ONE DEPENDENCY INTEGRATED (see SECTION 0); the rest PLANNED
-Version: 0.0.1
-Date:    2026-09-30
+Status:  Phase 1 — TWO DEPENDENCIES INTEGRATED (see SECTION 0); the rest PLANNED
+Version: 0.0.2
+Date:    2026-10-17
 
 -------------------------------------------------------------------------------
 IMPORTANT — READ BEFORE USING THIS FILE
@@ -16,9 +16,21 @@ not lost and the obligations are known before integration rather than after.
 
 SECTION 0 is different. It lists dependencies whose code is ACTUALLY PRESENT
 in a build today, with licences verified against the bytes we fetched rather
-than against upstream documentation. As of this revision that is PDFium, and
-only PDFium. SQLite is linked from the platform rather than vendored (see the
+than against upstream documentation. As of this revision that is PDFium and
+libsodium. SQLite is linked from the platform rather than vendored (see the
 note in SECTION 0).
+
+ONE MORE THING THIS FILE DOES NOT COVER, ADDED 2026-10-17 BECAUSE IT WAS
+MISSED AND IT IS NOT A LICENSING QUESTION AT ALL:
+
+  A LICENCE IS NOT THE ONLY THING THAT CONSTRAINS DISTRIBUTION. libsodium's
+  ISC licence imposes nothing beyond attribution, and yet integrating it
+  changes what we must file with a government before shipping, because the
+  app now provides content confidentiality with a bundled crypto library.
+  That is US EXPORT CONTROL (EAR Category 5 Part 2), not copyright, and it is
+  recorded in SECTION 0's libsodium entry and as risk R-33. Reviewing a
+  dependency's licence and concluding "clear to ship" is, for a cryptographic
+  dependency, the wrong conclusion from the right evidence.
 
 Three rules govern this file from Phase 1 onward:
 
@@ -138,6 +150,155 @@ repository right now. Everything in sections 1-5 is not.
   lead. This paragraph must not be deleted when the inventory lands — it must
   be replaced by the inventory's finding.
 
+  libsodium
+  ---------
+  SPDX identifier ...... ISC
+  Version .............. 1.0.22 (upstream stable release)
+  Used by .............. security/crypto (spec sections 23/38, ADR-0002
+                         decision 1 "E2EE from v1.0"): X25519 device keypair
+                         and CEK generation, XChaCha20-Poly1305-IETF
+                         authenticated encryption, authenticated CEK wrapping
+                         between two device keypairs, Argon2id passphrase key
+                         derivation, and guarded secure memory
+                         (sodium_malloc / sodium_memzero / sodium_memcmp).
+                         PRIMITIVES ONLY -- the E2EE architecture those
+                         support is NOT IMPLEMENTED.
+  Pinned at ............ third_party/libsodium/   (pin, checksums, licences)
+  Linking .............. dynamic (libsodium.dylib) on the macOS dev host;
+                         STATIC is the intended shipping arrangement and is
+                         unmeasured (see below)
+  Upstream ............. https://libsodium.org/  /  jedisct1/libsodium
+
+  ** STATUS: LOCAL DEV BOOTSTRAP. This is a Homebrew bottle on the dev host, **
+  ** not a build we performed and not what ships on Android or iOS.          **
+
+  The dependency was vetted in docs/spikes/SP-9-findings.md, which applies
+  the same criteria SP-1 applied to PDFium. Note that THIRD_PARTY_NOTICES
+  SECTION 1 has listed "libsodium ... ISC ... AEAD, KDF, signatures" as
+  approved since Phase 0, on the strength of upstream documentation. That row
+  is now CONFIRMED AGAINST THE BYTES, which is the difference between
+  SECTION 1 and SECTION 0.
+
+  Upstream source pin (what the real build must use):
+
+      libsodium-1.0.22.tar.gz
+      https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz
+      sha256 adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349
+
+  PROVENANCE OF THAT HASH, stated rather than implied: it comes from the
+  Homebrew core formula, i.e. from a second party we already trust to build
+  the bottle, NOT from upstream's own signature. Upstream signs every release
+  with minisign under the Ed25519 key
+
+      RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
+
+  and we have NOT verified one. That is the cheapest unclaimed win in this
+  dependency and it is OWED (third_party/libsodium/README.md, item 1). It is
+  also something PDFium cannot offer at all -- there is no upstream PDFium
+  release artefact to sign -- so the two bootstraps are not equally risky.
+
+  Licence verification -- performed against the FILE IN THE INSTALLED PREFIX,
+  not against upstream's website:
+
+    * third_party/libsodium/LICENSE is a byte-for-byte copy of
+      /opt/homebrew/Cellar/libsodium/1.0.22/LICENSE
+      sha256 508a76d186356c0dd807a670ef510964f8724557024796a2c426c6c0e19ab683
+      It is the ISC licence, "Copyright (c) 2013-2026 Frank Denis
+      <j at pureftpd dot org>": use, copy, modify and/or distribute for any
+      purpose with or without fee, provided the copyright notice and the
+      permission notice appear in all copies. The full text MUST be included
+      in the product's open-source-licences screen.
+    * third_party/libsodium/AUTHORS is copied from the same prefix and is the
+      contributor list the ISC attribution obligation points at.
+    * The bottle ships sbom.spdx.json whose licenseConcluded for the source
+      package is "ISC" (licenseDeclared is NOASSERTION -- Homebrew records the
+      formula's field, it does not scan). Corroborating evidence only; the
+      determination is the LICENSE file above.
+    * NO transitive dependencies. libsodium is plain C99 over libc, so unlike
+      PDFium there is no bundled licences/ directory to inventory and no
+      sub-project whose licence can change underneath us. This is a real
+      reduction in ongoing licensing risk, not a convenience.
+
+  Static vs dynamic linking, since this is where several licences in this
+  file do impose conditions: THE ISC TEXT MAKES NO DISTINCTION. Static
+  linking into a closed-source commercial binary distributed through the
+  Apple App Store and Google Play is unambiguously permitted, with
+  attribution as the only obligation. Contrast FreeType (SECTION 4: the FTL
+  requires a specific credit line and is dual-licensed with GPLv2, so the
+  election must be recorded) and the LGPL/GPL items in SECTION 2. There is no
+  equivalent question here and none should be invented.
+
+  Patent position: ISC grants no patent licence and has no retaliation or
+  termination clause. Identical to the BSD-2/BSD-3 items already accepted
+  throughout SECTION 1; not a new category of exposure.
+
+  Licence stability across versions: ISC since 2013, with only the copyright
+  year range moving. The re-roll procedure in third_party/libsodium/VERSION
+  treats ANY other diff in the licence text as a stop condition, which is
+  rule 3 of this file applied concretely -- the failure mode being AGG going
+  permissive (2.4) to GPL (2.5) and OpenCV moving BSD-3 to Apache-2.0 at
+  4.5.0.
+
+  NOT A LICENSING OBLIGATION, BUT A DISTRIBUTION ONE -- AND IT IS NEW
+  ------------------------------------------------------------------
+  Integrating libsodium makes the app's encryption NON-EXEMPT for Apple's
+  export-compliance purposes, and this file would be misleading if it stopped
+  at "ISC, clear to ship".
+
+  Apple's exemptions cover, in substance: encryption provided BY THE
+  OPERATING SYSTEM and called through Apple's own APIs; HTTPS/TLS to one's
+  own backend; and encryption used ONLY for authentication, signing or
+  integrity. Our case matches none of them -- the encryption is in a bundled
+  third-party library and it provides CONTENT CONFIDENTIALITY, which
+  ADR-0002 decision 1 makes the product's headline property. So
+  ITSAppUsesNonExemptEncryption = YES, the app falls under EAR Category 5
+  Part 2, and License Exception ENC (15 CFR 740.17(b)(1)) requires a
+  SELF-CLASSIFICATION REPORT emailed to BIS and to the NSA encryption
+  request coordinator before export AND ANNUALLY THEREAFTER. France
+  separately requires a declaration.
+
+  Three precisions, because each is easy to get wrong in the opposite
+  direction:
+
+    1. THIS IS NOT A libsodium PROBLEM. It follows from ADR-0002 decision 1.
+       Any library that encrypts user content lands in the same place;
+       choosing Monocypher or writing our own would not avoid it.
+    2. Using Apple's CryptoKit instead would probably NOT avoid it, and the
+       widespread belief that it would is a misreading of the OS-provided
+       exemption. That question needs counsel, and in any case CryptoKit is
+       ruled out on portability grounds (ADR-0001's C/C++ core must derive
+       the same key on iOS, Android and desktop).
+    3. IT IS NOT AN ENGINEERING DELIVERABLE. It is a release-process one with
+       a recurring annual component, and nothing in this repo owns it.
+       docs/security-model.md section 12 covers supply chain and is silent on
+       export control; deployment.md is silent too.
+
+  Recorded as risk R-33 in docs/risk-register.md. Owner: product lead.
+  Trigger: the first App Store submission containing security/crypto.
+
+  WHAT IS STILL OWED (do not let this entry read as "crypto: done")
+  ----------------------------------------------------------------
+    1. Verify a release's minisign signature. NOT DONE.
+    2. Build for android-arm64 and ios-arm64. The good news, and a real
+       difference from PDFium (SP-1 F-1/F-3): upstream ships the build
+       scripts itself -- dist-build/apple-xcframework.sh covers iOS,
+       Catalyst, tvOS, watchOS and visionOS plus simulators, and
+       dist-build/android-aar.sh covers all Android ABIs. The owed work is
+       "run upstream's script from a signed tarball in a container", not
+       "re-express someone else's build system".
+    3. Decide the --enable-minimal question. The minimal build strips
+       crypto_pwhash (Argon2id) and crypto_box_seal; we need crypto_pwhash
+       and crypto_kx, so minimal is almost certainly wrong, but the size
+       delta against the 120 MB install budget is NOT MEASURED.
+    4. Measure the stripped, dead-code-eliminated contribution of a STATIC
+       libsodium to the linked binary, per architecture (SP-1 F-5's
+       criterion, unmeasured here too).
+    5. The export-control filing above.
+    6. Automated CVE monitoring against the pin (section 12 of
+       security-model.md). libsodium's record is unusually clean, which is an
+       argument for choosing it and NOT an argument for skipping the
+       monitoring.
+
   Not in this section, deliberately
   ---------------------------------
   SQLite is used by storage/sqlite but is NOT vendored: the build links the
@@ -181,6 +342,12 @@ in-app "Open Source Licences" screen, plus this file).
   Cryptography
   ------------
   libsodium ...................... ISC               AEAD, KDF, signatures
+                                                     ** NOW INTEGRATED -- see
+                                                     SECTION 0, which supersedes
+                                                     this row. The verdict is
+                                                     unchanged; the evidence is
+                                                     now the bytes rather than
+                                                     upstream's documentation. **
                                                      NOTE: TLS is provided by the
                                                      platform stack; no TLS library
                                                      is bundled.

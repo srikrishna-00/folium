@@ -93,6 +93,37 @@ set(UAPP_ENABLE_PDF "AUTO" CACHE STRING
     "Build pdf-engine/ against the vendored PDFium: ON, OFF or AUTO (detect)")
 set_property(CACHE UAPP_ENABLE_PDF PROPERTY STRINGS AUTO ON OFF)
 
+# --- Cryptography (spec sections 23/38, ADR-0002 decision 1) ---------------
+# UAPP_ENABLE_CRYPTO is the same TRISTATE as UAPP_ENABLE_PDF, with the same
+# three meanings, for the same reasons — AUTO detects, ON requires and fails
+# configure if absent, OFF skips even when present. The contract is copied
+# deliberately: a second dependency switch that behaved differently from the
+# first would be a trap, and the pdf tristate's comment block above argues
+# every case already.
+#
+# What is DIFFERENT from PDFium is where the dependency comes from.
+# libsodium is a standard, packaged, dependency-free C99 library found via
+# pkg-config on the system (cmake/UappSodium.cmake), NOT a prebuilt binary
+# vendored under third_party/ and pinned by SHA-256. That inversion of
+# UappPdfium.cmake's NO_DEFAULT_PATH rule is argued at length in
+# third_party/libsodium/README.md, "Why this looks different from
+# third_party/pdfium" — the short version is that libsodium's entire
+# observable behaviour is checked against three EXTERNAL published test
+# vectors in tests/crypto, so a surprise copy is a red test rather than a
+# silent behaviour change, which is not true of a PDF parser.
+#
+# The acquisition step is still one explicit human/CI command and CMake still
+# never touches the network:
+#     brew install libsodium          # macOS
+#     apt install libsodium-dev       # Debian/Ubuntu CI
+#
+# This gate covers the PRIMITIVES layer only. E2EE itself — the key
+# hierarchy, device enrolment, rotation, sealed sync payloads — is NOT
+# IMPLEMENTED; see security/crypto/include/uapp/crypto/crypto.h.
+set(UAPP_ENABLE_CRYPTO "AUTO" CACHE STRING
+    "Build security/crypto against libsodium: ON, OFF or AUTO (detect)")
+set_property(CACHE UAPP_ENABLE_CRYPTO PROPERTY STRINGS AUTO ON OFF)
+
 option(UAPP_BUILD_TESTS       "Build unit tests"                         ${uapp_aux_default})
 option(UAPP_BUILD_TOOLS       "Build developer CLI / harness executables" ${uapp_aux_default})
 option(UAPP_ENABLE_SANITIZERS "Build with Address+UB sanitizers"         OFF)
@@ -124,6 +155,48 @@ if(NOT UAPP_ENABLE_FUZZING)
 endif()
 
 add_subdirectory(core)
+
+# --- security/crypto — the libsodium-backed primitives layer ---------------
+# Resolve the tristate into UAPP_CRYPTO_ENABLED (a plain bool the rest of the
+# build and tests/ branch on), exactly as UAPP_PDF_ENABLED works below.
+#
+# Added here, straight after core/, because security/crypto links
+# uapp::core_common PUBLIC-ly (crypto.h returns uapp::Status) and nothing
+# else. It is added BEFORE storage/ and file-engine/ to make the direction
+# visible: crypto depends on core/common and on nothing else in the tree,
+# and no module in the tree depends on crypto yet — the E2EE integration
+# those modules will need is NOT IMPLEMENTED.
+#
+# Skipped under UAPP_ENABLE_FUZZING, like storage/ and core/capi. That is a
+# judgement call worth recording rather than leaving implicit: crypto::open()
+# IS an untrusted-input entry point (spec §28 — a synced blob is untrusted
+# even though it used to be ours), so a libFuzzer target over it would be
+# legitimate. It is not written. The reason it is not is that the attack
+# surface is ~15 lines of length arithmetic in front of a library we did not
+# write and must not fuzz on its behalf; spec §29's required-fuzz-target list
+# names the format parsers, and inventing an extra one here would spend fuzz
+# minutes on libsodium rather than on the PDF reader. Recorded as NOT
+# IMPLEMENTED, not as unnecessary.
+set(UAPP_CRYPTO_ENABLED FALSE)
+if(NOT UAPP_ENABLE_CRYPTO STREQUAL "OFF" AND NOT UAPP_ENABLE_FUZZING)
+    include(cmake/UappSodium.cmake)
+
+    if(UAPP_SODIUM_FOUND)
+        set(UAPP_CRYPTO_ENABLED TRUE)
+    elseif(UAPP_ENABLE_CRYPTO STREQUAL "ON")
+        message(FATAL_ERROR
+            "uapp: UAPP_ENABLE_CRYPTO=ON but libsodium was not found.\n"
+            "  Reason: ${UAPP_SODIUM_REASON}\n"
+            "  Install it (LOCAL DEV BOOTSTRAP — see third_party/libsodium/README.md):\n"
+            "      brew install libsodium        # macOS\n"
+            "      apt install libsodium-dev     # Debian/Ubuntu\n"
+            "  Or configure with -DUAPP_ENABLE_CRYPTO=OFF to build without it.")
+    endif()
+endif()
+
+if(UAPP_CRYPTO_ENABLED)
+    add_subdirectory(security)
+endif()
 
 if(NOT UAPP_ENABLE_FUZZING)
     add_subdirectory(storage)
@@ -205,6 +278,16 @@ message(STATUS "uapp: tools               = ${UAPP_BUILD_TOOLS}")
 message(STATUS "uapp: sanitizers          = ${UAPP_ENABLE_SANITIZERS}")
 message(STATUS "uapp: fuzzing             = ${UAPP_ENABLE_FUZZING}")
 message(STATUS "uapp: warnings-as-errors  = ${UAPP_WARNINGS_AS_ERRORS}")
+
+if(UAPP_CRYPTO_ENABLED)
+    message(STATUS "uapp: security/crypto     = ON  (libsodium ${UAPP_SODIUM_VERSION}, "
+                   "${UAPP_SODIUM_LIBRARY} — LOCAL DEV BOOTSTRAP, see third_party/libsodium/README.md)")
+else()
+    message(STATUS "uapp: security/crypto     = OFF (${UAPP_ENABLE_CRYPTO})")
+    if(UAPP_SODIUM_REASON)
+        message(STATUS "uapp:                       ${UAPP_SODIUM_REASON}")
+    endif()
+endif()
 
 if(UAPP_PDF_ENABLED)
     message(STATUS "uapp: pdf-engine          = ON  (PDFium ${UAPP_PDFIUM_VERSION}, "

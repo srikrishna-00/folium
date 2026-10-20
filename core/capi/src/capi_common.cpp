@@ -255,6 +255,50 @@ uapp_status_t to_c_status(Status s) noexcept {
         case Status::DatabaseFilterOperatorUnsupported:
         case Status::DatabaseSchemaMalformed:
             return UAPP_STATUS_UNEXPECTED;
+
+        // ===================================================================
+        // security/crypto (spec sections 23/38, ADR-0002 decision 1): NOT
+        // MINTED — the same test, for a sixth time, and this time the answer
+        // to the second question is "no, AND IT MUST STAY NO FOR LONGER".
+        // ===================================================================
+        // The two questions are: did the core grow a code, and can a C caller
+        // reach it. The core grew nine; a C caller can reach none, because
+        // security/crypto has NO ABI header — and unlike blocks, search,
+        // file-engine, pdf-engine, conversion and database, this one is not
+        // merely "module first, frozen boundary after".
+        //
+        // The crypto ABI is deliberately deferred on a STRONGER argument,
+        // recorded in security/crypto/include/uapp/crypto/crypto.h under NOT
+        // IMPLEMENTED item 6: the shape of these functions will change when
+        // the key HIERARCHY above them exists (Recovery Secret -> URK -> WSK
+        // -> document key -> per-file key, security-model.md §5A.1). An ABI
+        // is a promise, and freezing `uapp_crypto_seal(key, pt, aad)` before
+        // we know whether a caller is handed a CEK, a document id, or an
+        // opaque key handle backed by the Secure Enclave would commit the
+        // boundary to the wrong one of those three. Flattening to UNEXPECTED
+        // costs nothing today because nothing can produce one of these
+        // through the boundary.
+        //
+        // One of the nine deserves a specific note for whoever mints these
+        // later. CryptoAuthFailed is intentionally the SINGLE code for wrong
+        // key, tampered ciphertext, truncated input, substituted nonce and
+        // mismatched AAD (see uapp/status.h). When a uapp_crypto.h exists,
+        // that must survive into the C vocabulary as ONE constant. Splitting
+        // it into UAPP_STATUS_CRYPTO_WRONG_KEY / _TAMPERED / _TRUNCATED would
+        // look like a courtesy to binding authors and would in fact be a
+        // decryption oracle frozen into a stable interface — the one
+        // flattening in this file that is a security requirement rather than
+        // a versioning convenience.
+        case Status::CryptoNotInitialised:
+        case Status::CryptoRandomFailed:
+        case Status::CryptoKeyInvalid:
+        case Status::CryptoAuthFailed:
+        case Status::CryptoSealedBlobBad:
+        case Status::CryptoMessageTooLarge:
+        case Status::CryptoKdfFailed:
+        case Status::CryptoSecureAllocFailed:
+        case Status::CryptoPassphraseTooShort:
+            return UAPP_STATUS_UNEXPECTED;
     }
     // A code the core added and this layer has not been taught. We must not
     // guess a meaning for it; say so honestly instead.

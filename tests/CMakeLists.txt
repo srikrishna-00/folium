@@ -494,3 +494,77 @@ if(UAPP_PDF_ENABLED)
     set_tests_properties(uapp.capi.pdf.slice uapp.capi.pdf.boundary
                          PROPERTIES TIMEOUT 120)
 endif()
+
+# ---------------------------------------------------------------------------
+# security/crypto — the libsodium-backed cryptographic primitives
+# (spec §23/§38, ADR-0002 decision 1).
+#
+# Conditional on UAPP_CRYPTO_ENABLED for the same reason uapp_pdf_tests is
+# conditional on UAPP_PDF_ENABLED: with libsodium absent the module is not
+# compiled at all, so these cases cannot be compiled-and-skipped. No
+# skipped-test placeholder is registered — a test that reports "skipped" for
+# a module that was never built is a test result about nothing.
+#
+# A SEVENTH separate executable. It links ONLY uapp::security_crypto, which
+# links uapp::core_common PUBLIC and uapp::sodium PRIVATE — so it cannot
+# reach SQLite, core/notes, core/blocks, core/database, file-engine or
+# pdf-engine, and "the crypto module encrypts bytes and knows nothing about
+# the document model" is checked by the link line rather than by review.
+#
+# It also proves the HEADER boundary, which is the more valuable half: this
+# file includes only uapp/crypto/*.h and never <sodium.h>, and it is not
+# given libsodium's include path. If a libsodium type or macro ever leaked
+# into security/crypto's public interface, this target would stop compiling.
+# That is why the hex parser in crypto_test.cpp is hand-written instead of
+# calling sodium_hex2bin, which would have been one line.
+#
+# Six CTest entries over one binary, split by name filter, because the six
+# failure modes mean six different things:
+#   .init     — libsodium is missing, mis-versioned or failed to initialise;
+#               everything below it is meaningless if this fails
+#   .vectors  — we disagree with an EXTERNAL published test vector
+#               (draft-irtf-cfrg-xchacha-03 A.3.1, RFC 7748 §6.1). This is
+#               the entry that says "our ciphertext is not what the standard
+#               says it should be", i.e. the only one that can catch a
+#               wrong-construction bug a round trip would hide.
+#   .aead     — encrypt/decrypt, or one of the ways decryption must fail
+#               (wrong key, tampered, truncated, wrong nonce, wrong AAD)
+#               without crashing and without returning plaintext
+#   .wrap     — key wrapping between device keypairs, including that the
+#               wrong device and the wrong sender are both rejected
+#   .kdf      — Argon2id determinism, parameter separation, and the cost
+#               parameters chosen for the 2 GB device floor
+#   .nonce    — the nonce/key uniqueness sampling. A failure here means the
+#               CSPRNG path is broken, which invalidates .aead and .wrap even
+#               though both would still pass
+#   .memory   — SecureBytes: guarded allocation, zeroing, move ownership
+#
+# TIMEOUT 300 rather than the 120 used elsewhere. .kdf runs Argon2id five
+# times, including once at DesktopModerate's 256 MiB, and under
+# ASan+UBSan a memory-hard function is several times slower than in a plain
+# Debug build. A timeout that only fails in the sanitizer configuration is
+# worse than a generous one.
+# ---------------------------------------------------------------------------
+if(UAPP_CRYPTO_ENABLED)
+    add_executable(uapp_crypto_tests
+        support/test_main.cpp
+        crypto/crypto_test.cpp)
+
+    target_include_directories(uapp_crypto_tests PRIVATE support crypto)
+
+    target_link_libraries(uapp_crypto_tests
+        PRIVATE uapp::security_crypto uapp::compiler_options)
+
+    add_test(NAME uapp.crypto.init    COMMAND uapp_crypto_tests "crypto.init")
+    add_test(NAME uapp.crypto.vectors COMMAND uapp_crypto_tests "crypto.vectors")
+    add_test(NAME uapp.crypto.aead    COMMAND uapp_crypto_tests "crypto.aead")
+    add_test(NAME uapp.crypto.wrap    COMMAND uapp_crypto_tests "crypto.wrap")
+    add_test(NAME uapp.crypto.kdf     COMMAND uapp_crypto_tests "crypto.kdf")
+    add_test(NAME uapp.crypto.nonce   COMMAND uapp_crypto_tests "crypto.nonce")
+    add_test(NAME uapp.crypto.memory  COMMAND uapp_crypto_tests "crypto.memory")
+
+    set_tests_properties(uapp.crypto.init uapp.crypto.vectors uapp.crypto.aead
+                         uapp.crypto.wrap uapp.crypto.kdf uapp.crypto.nonce
+                         uapp.crypto.memory
+                         PROPERTIES TIMEOUT 300)
+endif()

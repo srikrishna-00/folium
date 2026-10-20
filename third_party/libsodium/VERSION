@@ -1,0 +1,142 @@
+libsodium — vendored dependency pin
+===================================
+
+STATUS: LOCAL DEV BOOTSTRAP (Homebrew bottle). NOT the shipping arrangement.
+        See README.md in this directory and docs/spikes/SP-9-findings.md §6.
+
+Upstream project   libsodium (https://libsodium.org/)
+Upstream source    https://github.com/jedisct1/libsodium
+Version            1.0.22  (upstream "stable" release)
+Licence            ISC — see ./LICENSE (verified against the fetched bytes)
+Pinned on          2026-10-17
+
+Unlike PDFium (third_party/pdfium/VERSION, SP-1 F-1), libsodium publishes
+NUMBERED RELEASE TARBALLS and signs them. So this pin is a real version pin,
+not a branch head plus a hash standing in for a version. Both the version and
+the SHA-256 are still recorded, for the same reason as PDFium: the version
+names what we intended, the hash names the bytes.
+
+What is actually on this machine right now
+------------------------------------------
+A Homebrew bottle, poured into the Homebrew prefix, NOT into this directory:
+
+  prefix        /opt/homebrew/Cellar/libsodium/1.0.22
+  installed     2026-10-17 (brew install libsodium)
+  formula       https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/lib/libsodium.rb
+  formula rev   0
+  bottle        arm64_golden_gate
+  bottle sha256 392bcb752afb9cefda3485186b6c008efa9dc2367245e74cda7b9caf93443fe5
+  size          88 files, 1.1 MB
+  runtime ver   sodium_version_string() == "1.0.22"  (asserted by
+                uapp.crypto.init, not assumed — see tests/crypto/crypto_test.cpp)
+
+  built artefacts observed in that prefix:
+    lib/libsodium.a          sha256 c5996a7e55b685ac86f62929595cecdbfc30daf728632971c57b65af14daac8b
+    lib/libsodium.26.dylib   sha256 3e831034a31fc26d740917a07e9141db0699fc9cc4737a31e532c02145e0a212
+
+  Those two hashes describe THIS MACHINE'S BUILD of libsodium 1.0.22 and will
+  differ on any other host, compiler or Homebrew revision. They are recorded
+  as a reproducibility note for this session, NOT as a supply-chain pin — a
+  pin on a locally-built artefact is not a pin on anything.
+
+Upstream source pin (what the real build must use)
+--------------------------------------------------
+  asset   libsodium-1.0.22.tar.gz
+  url     https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz
+  sha256  adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349
+
+  Verify by hand:
+    curl -fsSL -o s.tgz https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz
+    shasum -a 256 s.tgz
+
+  PROVENANCE OF THAT HASH, stated honestly: it is taken from the Homebrew
+  core formula for libsodium 1.0.22 (`brew info --json=v2 libsodium`), i.e.
+  from a second party we already trust to build the bottle. It has NOT been
+  checked against upstream's own signature. Upstream signs every release with
+  minisign under the Ed25519 public key
+
+    RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
+
+  (also a GPG/RSA key). **Verifying the .minisig against that key is OWED and
+  NOT DONE.** It is cheap, it is the one thing PDFium cannot offer us at all
+  (no release artefact to sign), and it should be the first step of the real
+  vendoring. See README.md, "What is still owed", item 1.
+
+Build configuration
+-------------------
+Homebrew's formula builds with `./configure --disable-silent-rules` and
+nothing cryptographically interesting switched off; in particular this is NOT
+a `--enable-minimal` build, so crypto_pwhash (Argon2id) is present. The
+module asserts that at runtime rather than trusting it: a build where
+crypto_pwhash is compiled out would fail uapp.crypto.kdf immediately rather
+than silently losing the passphrase path.
+
+NOT CONFIGURED, and it matters for mobile: `--enable-minimal` strips
+crypto_pwhash, crypto_box_seal and several other symbols to shrink the binary.
+The mobile build must decide explicitly whether to use it; we need
+crypto_pwhash and crypto_kx, so the answer is almost certainly NO and the
+size cost must be measured rather than assumed.
+
+Licensing
+---------
+Verified against the actual file in the installed prefix, not against
+upstream's website:
+
+  * ./LICENSE is a byte-for-byte copy of
+    /opt/homebrew/Cellar/libsodium/1.0.22/LICENSE
+    sha256 508a76d186356c0dd807a670ef510964f8724557024796a2c426c6c0e19ab683
+    It is the ISC licence, "Copyright (c) 2013-2026 Frank Denis
+    <j at pureftpd dot org>". Short permissive form: use, copy, modify and/or
+    distribute for any purpose with or without fee, provided the copyright
+    notice and the permission notice appear in all copies. No copyleft, no
+    source-disclosure trigger, no advertising clause, no patent grant and no
+    patent retaliation clause.
+  * ./AUTHORS is copied from the same prefix and is the contributor list the
+    ISC notice's "copyright notice" obligation points at.
+  * The bottle also ships sbom.spdx.json, whose `licenseConcluded` for the
+    source package is "ISC" (`licenseDeclared` is NOASSERTION — Homebrew does
+    not scan, it records the formula's `license` field). Corroborating
+    evidence, not the determination; the determination is ./LICENSE above.
+
+  There is NO static-vs-dynamic distinction anywhere in the ISC text. This is
+  the material difference from FreeType's FTL (THIRD_PARTY_NOTICES §4) and
+  from anything LGPL: static linking into a closed-source commercial binary
+  distributed through the Apple App Store and Google Play is unambiguously
+  permitted, with attribution as the only obligation.
+
+  THE MOBILE DISTRIBUTION CONSTRAINT IS NOT A LICENCE CONSTRAINT. It is US
+  export control (EAR Category 5 Part 2) plus Apple's
+  ITSAppUsesNonExemptEncryption declaration. See
+  docs/spikes/SP-9-findings.md §4 — that is the finding this vetting
+  actually produced, and it is an operational/legal deliverable that does not
+  currently exist anywhere in the repo.
+
+Re-roll procedure
+-----------------
+1. Pick a release from https://github.com/jedisct1/libsodium/releases (or
+   https://download.libsodium.org/libsodium/releases/).
+2. Download the tarball AND its `.minisig`. Verify the signature against
+   RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3 with
+   `minisign -V -P <key> -m <tarball>`. Record the SHA-256.
+3. Update the version, the URL and the SHA-256 in this file. Re-copy LICENSE
+   and AUTHORS out of the new tree and diff them: the ISC text has been
+   stable since 2013, so ANY diff beyond the copyright year range is a
+   licence change and must stop the roll (this is the AGG-2.4-to-2.5 failure
+   mode THIRD_PARTY_NOTICES rule 3 warns about).
+4. Re-read the release notes for primitive deprecations. libsodium has never
+   removed a primitive, but it has changed *defaults*
+   (crypto_pwhash_ALG_DEFAULT moved from Argon2i to Argon2id at 1.0.15), and
+   this module pins crypto_pwhash_ALG_ARGON2ID13 explicitly rather than
+   taking ALG_DEFAULT for exactly that reason.
+5. Re-run the crypto suite. The published test vectors in
+   tests/crypto/crypto_test.cpp (CFRG XChaCha20-Poly1305, RFC 7748 X25519)
+   are the check that matters here: they are external to both libsodium and
+   us, so they catch a roll that changed behaviour rather than merely
+   compiling.
+
+This procedure is written down but NOT scripted, and that is a deliberate
+difference from third_party/pdfium/fetch_pdfium.sh. A fetch script for
+libsodium would have to either (a) build it, which is the real mobile
+problem and is out of scope here, or (b) wrap `brew install`, which would
+dress a dev-host convenience up as supply-chain tooling. Step 2 above is the
+part worth scripting first, and it is owed.

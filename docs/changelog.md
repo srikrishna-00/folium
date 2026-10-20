@@ -12,6 +12,160 @@ Planning and architecture work is recorded as such.
 
 ## [Unreleased]
 
+### Added — `security/crypto`: cryptographic primitives on libsodium (spec §23/§38, ADR-0002 decision 1)
+
+The foundation `adr/0002` decision 1 ("E2EE from v1.0") stands on, and **only** the
+foundation. `architecture.md` §4's layer diagram already named this module —
+"`security/crypto (libsodium)`", in the ADAPTERS row — so it went where the architecture put
+it rather than into `core/`: `core/` is the portable domain layer that "knows nothing about
+SQLite, HTTP, platform APIs or UI", and a wrapper around a specific third-party C library is
+an adapter by the same rule that puts `storage/sqlite` outside `core/`.
+
+**Dependency vetted and pinned first — `docs/spikes/SP-9-findings.md`.** This is a new spike,
+not one of `technical-requirements.md` §6's SP-1…SP-8 (that table predates the E2EE decision
+and has no crypto-dependency row). It follows the SP-1 precedent: licence verified against the
+installed bytes rather than upstream's website, a `third_party/libsodium/VERSION` pin recording
+version + upstream tarball SHA-256 + the dev-host artefacts, `LICENSE`/`AUTHORS` copied out of
+the prefix, a documented re-roll procedure, and a `THIRD_PARTY_NOTICES` SECTION 0 entry.
+**libsodium 1.0.22, ISC.** SECTION 1 had listed libsodium as approved since Phase 0 on the
+strength of upstream documentation; that row is now confirmed against the bytes, which is the
+difference between SECTION 1 and SECTION 0.
+
+**The licence is a non-event and the finding is somewhere else.** ISC imposes nothing beyond
+attribution and — unlike FreeType's FTL or anything LGPL — makes **no static-vs-dynamic
+distinction**, so static linking into a closed-source App Store binary is unambiguously
+permitted. What the vetting actually turned up is that bundling a crypto library providing
+*content confidentiality* makes the app's encryption **non-exempt** for Apple's purposes,
+pulling in an **EAR Category 5 Part 2 self-classification report to BIS/NSA before export and
+annually thereafter**, plus a France declaration. That follows from ADR-0002 decision 1 rather
+than from libsodium, it is a legal/release-process deliverable rather than an engineering one,
+and nothing in the repo owned it: **new risk R-33**, plus a new gate row in
+`security-model.md` §13. Reviewing a crypto dependency's licence and concluding "clear to
+ship" is the wrong conclusion from the right evidence.
+
+**Implemented:** X25519 device keypair generation (`crypto_kx_keypair`); CEK and Argon2id salt
+generation; XChaCha20-Poly1305-IETF `seal`/`open` with associated data; authenticated CEK
+wrapping/unwrapping between two device keypairs; Argon2id passphrase derivation with three
+named cost profiles; and `SecureBytes`, a `sodium_malloc`-backed move-only buffer used for
+every secret **and for recovered plaintext**.
+
+**Rule 0, enforced by the build graph rather than by review:** *we do not implement
+cryptographic primitives* (spec §38). Everything delegates to libsodium — verifiable as 15
+imported symbols and no arithmetic over key material. `uapp::sodium` is linked **PRIVATE**, and
+`crypto.h` declares its own `kNonceBytes`/`kTagBytes`/… `static_assert`ed against libsodium's
+macros in the `.cpp` precisely so the public header never needs `<sodium.h>` — which makes
+PRIVATE enforceable rather than aspirational. Exactly two files in the tree include the
+libsodium header, and `nm -u` shows zero libsodium imports in all seven other first-party
+libraries.
+
+**Nonce strategy, decided and documented rather than defaulted into.** Nonce reuse under
+ChaCha20-Poly1305 is catastrophic (repeated keystream *and* a leaked Poly1305 one-time key,
+i.e. arbitrary forgery), and it is the most common way real AEAD deployments break. **A fresh
+random 192-bit nonce is generated inside `seal()` from the platform CSPRNG, and the API gives
+the caller no way to supply, influence or reuse one — there is no `seal_with_nonce()` overload,
+not even a test-only one.** That absence is the control: an API accepting a nonce cannot
+prevent its misuse by documentation, and a test-only back door is a production back door with
+a comment on it. Safe because the nonce is 192 bits: collision probability is `< q²/2^193`,
+i.e. `2^-129` at `2^32` encryptions under one key and `2^-65` at an absurd `2^64` — against
+AES-GCM's `~2^-33` at `2^32` with a 96-bit IV, which is why NIST SP 800-38D caps a random-IV
+GCM key at `2^32` invocations. **The primitive choice and the nonce strategy are one decision,
+not two.** `security-model.md` §5's *deterministic* chunked-blob nonce
+(`HKDF(file_key, chunk_index)`) remains the right design for that path, is NOT IMPLEMENTED,
+and must arrive as a separately-named entry point whose caller owns the index.
+
+**Key wrapping diverges from a written design, deliberately, and the divergence is flagged
+rather than absorbed.** `security-model.md` §5A.2 names `crypto_box_seal`, which uses an
+ephemeral sender keypair and therefore authenticates **nobody**. Given T-305 ("a
+malicious/compromised device pushes poisoned sync data"), the implementation uses the
+**authenticated** variant: `crypto_kx` (X25519 + BLAKE2b over both static public keys)
+deriving a *directional* KEK, then the module's own XChaCha20-Poly1305 over the CEK with both
+public keys bound into the AAD. The recipient authenticates the sender, a wrapped key cannot be
+replayed back at its sender, and the module keeps **one** AEAD rather than two (`crypto_box`
+uses XSalsa20-Poly1305). It gives up sender anonymity. §5A.2 does not say which property it
+wants; that ambiguity is annotated there as an open question for a human, with the note that if
+both are needed the anonymous form is an *additional* function, never a replacement.
+
+**Argon2id parameters conflict with `security-model.md` §5, and §5 is wrong.** §5 specified
+`opslimit=4, memlimit=256 MiB` "where we can afford it" — written before `adr/0002` decision 3
+fixed the floor at 2 GB RAM / iOS 15+ / Android 8+, on which a 256 MiB transient allocation is
+a foreground low-memory kill. The implementation uses **`opslimit=3, memlimit=64 MiB`**, which
+is libsodium's *own documented procedure* applied to our constraint ("set `memlimit` to the
+amount of memory you want to reserve… then set `opslimit` to 3") with 64 MiB being the largest
+of its three presets that fits. Measured 61 ms on an Apple M4 (vs 42 ms for the INTERACTIVE
+preset's `opslimit=2`, 277 ms for MODERATE's 256 MiB, 1563 ms for SENSITIVE's 1 GiB);
+estimated 0.4-0.6 s on floor hardware. **The cost is stated rather than minimised:** a 4x cut
+in `memlimit` is a 4x cut in an offline attacker's memory cost per guess. Accepted because the
+alternative is a passphrase path that cannot run on the committed device floor, and because
+§5A.4 roots recovery in a generated 24-word phrase (~256 bits) rather than a user-chosen
+passphrase. §5 is annotated in place. **Measuring on real floor-tier hardware is owed** — the
+same class of gap as SP-3/SP-4's Tier D re-runs. `crypto_pwhash_ALG_ARGON2ID13` is passed
+explicitly, never `ALG_DEFAULT`, which changed meaning (Argon2i → Argon2id) at libsodium
+1.0.15: a derived key whose algorithm depends on the linked version is a key that silently
+stops deriving after a dependency roll.
+
+**Secure memory, with its limits stated.** `SecureBytes` wraps `sodium_malloc` for guard pages,
+a canary, `mlock` (no swap), and zero-on-free; it is move-only so a key cannot be duplicated
+into a second unmanaged lifetime by an implicit copy. `open()` writes recovered plaintext into
+a `SecureBytes` rather than a `std::vector`, because decrypted document content *is* asset A1
+and a `std::vector`'s buffer is reclaimed without zeroing. Ciphertext, public keys, nonces and
+salts stay in ordinary `std::vector`/`std::array` — they are not secret, and guarded pages are
+a scarce resource. **What it is not:** it is not a Secure Enclave. `security-model.md` §5A says
+device keys are generated in hardware and never leave it; these are generated in ordinary
+process memory with better hygiene. `security/key-management` does not exist. Also recorded:
+`sodium_mlock` can fail silently on a low `RLIMIT_MEMLOCK` and libsodium exposes no way to ask
+whether it did.
+
+**Tests — 27 cases, 7 ctest entries, built on published vectors rather than round trips.** A
+round trip passes for *any* pair of mutually-inverse functions, including a wrapper that
+silently drops the AAD or confuses XChaCha20 with the original ChaCha20 — both invisible to a
+round trip and catastrophic against a real attacker. So: `draft-irtf-cfrg-xchacha-03` §A.3.1's
+AEAD vector is driven through the real `open()` (the decrypt direction on purpose: `seal()` has
+no nonce parameter and adding a test-only one would be adding the back door the nonce strategy
+forbids), with one-bit mutations in **both** the ciphertext and the tag region, and
+wrong-AAD/no-AAD rejection; RFC 7748 §6.1's Alice/Bob keypairs are used as real device keys
+through the real wrap/unwrap path in both directions, plus small-order public-key rejection.
+**No external Argon2id KAT is possible** and this is structural, not an omission: RFC 9106's
+vectors use parallelism `p=4` and libsodium hardcodes `p=1`, so golden regression vectors are
+used and labelled as such — what they catch is a dependency roll silently changing the
+derivation, which would lock every existing user out of their own data. Failure modes are
+exhaustive: wrong key, substituted nonce (a *genuine* nonce from another ciphertext under the
+same key, which is the realistic attack), every truncation length from 0 to full, wrong AAD,
+third-party unwrap, misattributed sender, every-7th-byte tampering — each asserting the
+recovered buffer is **empty**, because "no plaintext on authentication failure" is a security
+property and is tested as one. All five causes return the **same** `CryptoAuthFailed`: anything
+finer is a decryption oracle. Plus 20 000-sample nonce and 2 000-sample key uniqueness
+sampling, with the test stating plainly what it *cannot* show (it cannot confirm the birthday
+bound; it catches a constant, a counter, a clock or an unseeded PRNG, which are how this
+actually breaks).
+
+**Build integration.** `UAPP_ENABLE_CRYPTO` is the same tristate as `UAPP_ENABLE_PDF` — AUTO
+detects, ON fails configure with the install command in the message, OFF skips — because a
+second dependency switch behaving differently from the first would be a trap. What differs is
+acquisition: `cmake/UappSodium.cmake` finds libsodium on **system** paths (pkg-config, then
+`find_library`, then the version read out of `sodium/version.h`), **inverting**
+`UappPdfium.cmake`'s `NO_DEFAULT_PATH` rule. Argued in `third_party/libsodium/README.md`: that
+rule protects against linking an unpinned *parser* of unknown vintage, which is worth much less
+for a library whose entire observable behaviour is pinned by two external published test
+vectors and a runtime version assertion — a surprise libsodium is a red test, not a silent
+behaviour change. Unchanged from the PDFium precedent: **CMake never touches the network**.
+Verified: AUTO → ON (46/46 tests), OFF → 39/46 with everything else unaffected, ON with nothing
+findable → hard configure error. Clean under Debug and under Debug+ASan/UBSan with
+`-Werror -fno-exceptions -fno-rtti`.
+
+**NOT IMPLEMENTED** (listed in full in `crypto.h` at the point a reader would otherwise assume
+otherwise): the key hierarchy (Recovery Secret → URK → WSK → document key → per-file key,
+§5A.1) and therefore no `crypto_kdf_derive_from_key` wrapper; chunked blob encryption (§5);
+device enrolment, the out-of-band short-code check, WSK rotation and revocation (§5A.2, §5A.3);
+**Ed25519 device identity keys and mutation signing** (§4, §5 — this module does key *agreement*
+only, and conflating agreement with signing in one keypair is the start of using one key for
+two purposes); hardware-backed key storage; post-quantum anything (§5A.6 pins "X25519 only"); a
+fuzz target over `open()`; and **a C ABI**. The ABI is deferred on a stronger argument than the
+other modules': the shape of these functions will change once the hierarchy above them exists,
+and an ABI is a promise. The nine new `Status` codes are therefore flattened to
+`UAPP_STATUS_UNEXPECTED` in `core/capi` following the precedent set five times already — with a
+note that when they *are* minted, `CryptoAuthFailed` must stay **one** constant, because
+splitting it would freeze a decryption oracle into a stable interface.
+
 ### Added — `core/database`: property-typed databases and Table views (spec §15)
 
 First real slice of spec §15's Database System: a named collection of typed property

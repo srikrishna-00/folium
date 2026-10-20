@@ -82,6 +82,25 @@ const char* status_code(Status s) noexcept {
             return "DATABASE_FILTER_OPERATOR_UNSUPPORTED";
         case Status::DatabaseSchemaMalformed:
             return "DATABASE_SCHEMA_MALFORMED";
+
+        case Status::CryptoNotInitialised:
+            return "CRYPTO_NOT_INITIALISED";
+        case Status::CryptoRandomFailed:
+            return "CRYPTO_RANDOM_FAILED";
+        case Status::CryptoKeyInvalid:
+            return "CRYPTO_KEY_INVALID";
+        case Status::CryptoAuthFailed:
+            return "CRYPTO_AUTH_FAILED";
+        case Status::CryptoSealedBlobBad:
+            return "CRYPTO_SEALED_BLOB_BAD";
+        case Status::CryptoMessageTooLarge:
+            return "CRYPTO_MESSAGE_TOO_LARGE";
+        case Status::CryptoKdfFailed:
+            return "CRYPTO_KDF_FAILED";
+        case Status::CryptoSecureAllocFailed:
+            return "CRYPTO_SECURE_ALLOC_FAILED";
+        case Status::CryptoPassphraseTooShort:
+            return "CRYPTO_PASSPHRASE_TOO_SHORT";
     }
     // Reached only if a caller casts a bogus integer into Status. We do not
     // trust that it cannot happen just because the enum is closed.
@@ -208,6 +227,26 @@ const char* status_message(Status s) noexcept {
             return "That filter operator is not applicable to that property type.";
         case Status::DatabaseSchemaMalformed:
             return "The database schema is structurally invalid.";
+
+        case Status::CryptoNotInitialised:
+            return "The cryptographic library has not been initialised.";
+        case Status::CryptoRandomFailed:
+            return "The platform random number generator could not be used.";
+        case Status::CryptoKeyInvalid:
+            return "A key or public key is the wrong size or is not a usable value.";
+        // Same wording for every cause, on purpose: see the note in status.h.
+        case Status::CryptoAuthFailed:
+            return "The ciphertext did not authenticate under the supplied key.";
+        case Status::CryptoSealedBlobBad:
+            return "The sealed blob is too short to contain a nonce and a tag.";
+        case Status::CryptoMessageTooLarge:
+            return "The message or associated data exceeds the encryption size limit.";
+        case Status::CryptoKdfFailed:
+            return "Deriving a key from the passphrase failed, most likely out of memory.";
+        case Status::CryptoSecureAllocFailed:
+            return "A guarded secure allocation for key material could not be made.";
+        case Status::CryptoPassphraseTooShort:
+            return "The passphrase is shorter than the minimum accepted length.";
     }
     return "Unrecognised status code.";
 }
