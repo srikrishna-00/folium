@@ -113,6 +113,81 @@ endif()
 # because it needs an instrumented libc++ and cannot be combined with ASan;
 # that needs a libc++ build this repo does not have.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# uapp::compiler_options_exceptions_ok — the ONE sanctioned exception to
+# ADR-0001's "no exceptions" rule, and it exists for exactly one reason:
+# cpp-httplib (third_party/httplib) genuinely cannot be compiled under
+# -fno-exceptions. This was verified empirically, not assumed — compiling a
+# trivial `httplib::Server` translation unit with -fno-exceptions produces
+# hard errors at real, load-bearing call sites, not a style choice:
+#   httplib.h:2408/2413  Server::serve_guarded's own try/catch, which is how
+#                        httplib turns a handler exception into a 500
+#                        response instead of crashing the process — losing
+#                        this would be a regression, not a simplification.
+#   httplib.h:8364, 12479, 12504, 12872, 15312, 18114, 23551
+#                        throw/rethrow in argument validation and range-
+#                        header parsing.
+#
+# This target is IDENTICAL to uapp::compiler_options (same warnings, same
+# -fno-rtti — confirmed separately that httplib compiles cleanly under
+# -fno-rtti alone) except it omits -fno-exceptions.
+#
+# THE RULE THIS TARGET EXISTS UNDER, NOT JUST THE FLAGS: it may be linked
+# ONLY by a small translation unit whose entire job is to wrap httplib (or
+# any other exception-throwing third party) behind a plain, exception-free
+# C++ interface — e.g. api/src/transport/http_server.cpp,
+# ai/remote/src/http_client.cpp. That wrapper's own public functions must
+# never let a C++ exception escape across its boundary: every httplib call
+# it makes is inside its own try/catch, converted to a bool/Status return,
+# exactly the same "exception-to-status conversion at the boundary"
+# philosophy core/capi/src/capi_internal.h's UAPP_CAPI_GUARD_BEGIN/END macros
+# already apply at the ABI boundary — just written out by hand here because
+# this is one file, not a whole module of exported C functions. No route
+# handler, no business-logic file, and nothing under core/, security/, ai/
+# (other than the one http_client.cpp wrapper) may link this target.
+# ---------------------------------------------------------------------------
+add_library(uapp_compiler_options_exceptions_ok INTERFACE)
+add_library(uapp::compiler_options_exceptions_ok ALIAS uapp_compiler_options_exceptions_ok)
+
+if(MSVC)
+    target_compile_options(uapp_compiler_options_exceptions_ok INTERFACE /W4 /permissive-)
+    target_compile_options(uapp_compiler_options_exceptions_ok INTERFACE
+        $<$<COMPILE_LANGUAGE:CXX>:/GR->)
+    if(UAPP_WARNINGS_AS_ERRORS)
+        target_compile_options(uapp_compiler_options_exceptions_ok INTERFACE /WX)
+    endif()
+else()
+    target_compile_options(uapp_compiler_options_exceptions_ok INTERFACE
+        -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow
+        -Wcast-qual -Wdouble-promotion -Wformat=2 -Wundef -Wunused)
+    target_compile_options(uapp_compiler_options_exceptions_ok INTERFACE
+        $<$<COMPILE_LANGUAGE:CXX>:-Wold-style-cast>
+        $<$<COMPILE_LANGUAGE:CXX>:-Wnon-virtual-dtor>
+        $<$<COMPILE_LANGUAGE:CXX>:-Woverloaded-virtual>
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+    if(UAPP_WARNINGS_AS_ERRORS)
+        target_compile_options(uapp_compiler_options_exceptions_ok INTERFACE -Werror)
+    endif()
+endif()
+
+# Sanitizers apply here too, and matter MORE here than on most targets: the
+# one file allowed to link this target (http_server.cpp) is the one place
+# in the whole project parsing raw bytes off a real network socket — exactly
+# the untrusted-input surface ASan/UBSan exist to catch. Mirrors
+# uapp::compiler_options' own block below verbatim; kept as a second copy
+# rather than refactored into a shared macro because these two targets'
+# divergence (exceptions on/off) is the entire reason this file exists, and
+# a shared helper would obscure that at the one place a reader most needs it
+# spelled out.
+if(UAPP_ENABLE_SANITIZERS AND NOT UAPP_ENABLE_FUZZING AND NOT MSVC)
+    target_compile_options(uapp_compiler_options_exceptions_ok INTERFACE
+        -fsanitize=address,undefined
+        -fno-omit-frame-pointer
+        -fno-sanitize-recover=undefined)
+    target_link_options(uapp_compiler_options_exceptions_ok INTERFACE
+        -fsanitize=address,undefined)
+endif()
+
 if(UAPP_ENABLE_FUZZING)
     if(MSVC)
         message(FATAL_ERROR

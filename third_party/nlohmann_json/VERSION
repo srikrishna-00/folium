@@ -1,0 +1,17 @@
+project:  nlohmann/json
+tag:      v3.12.0
+file:     json.hpp (the official single-header amalgamation release asset,
+          not a concatenation we produced ourselves)
+url:      https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp
+sha256:   aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63
+license:  MIT (LICENSE.MIT in this directory, fetched from the same tag)
+
+Fetched by hand (no FetchContent, no file(DOWNLOAD) — see
+third_party/httplib/README.md "why this looks different from both pdfium
+and libsodium", which applies identically here). Re-pin by re-running:
+
+    curl -fsSL -o third_party/nlohmann_json/json.hpp \
+        https://github.com/nlohmann/json/releases/download/<new-tag>/json.hpp
+    shasum -a 256 third_party/nlohmann_json/json.hpp   # update sha256 above
+    curl -fsSL -o third_party/nlohmann_json/LICENSE.MIT \
+        https://raw.githubusercontent.com/nlohmann/json/<new-tag>/LICENSE.MIT

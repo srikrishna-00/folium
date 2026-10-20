@@ -166,6 +166,14 @@ option(UAPP_BUILD_TOOLS       "Build developer CLI / harness executables" ${uapp
 option(UAPP_ENABLE_SANITIZERS "Build with Address+UB sanitizers"         OFF)
 option(UAPP_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"       ON)
 
+# uapp-server — the HTTP service in api/ that wraps core/capi for the web
+# frontend. Follows UAPP_BUILD_TOOLS's default rather than UAPP_CRYPTO_ENABLED/
+# UAPP_PDF_ENABLED's AUTO-detect shape, because its only third-party
+# dependencies (cmake/UappHttp.cmake, cmake/UappJson.cmake) are vendored
+# header text, always present once cloned — there is no "not found on this
+# host" case to resolve, unlike libsodium/PDFium/Tesseract.
+option(UAPP_BUILD_SERVER      "Build the uapp-server HTTP service (api/)" ${uapp_aux_default})
+
 # core/sync/spike — the Fugue CRDT correctness spike owed by ADR-0002. It is
 # RESEARCH CODE: it is never linked by a product target, and it follows
 # UAPP_BUILD_TESTS because its only consumer is tests/sync_spike. Spelled as
@@ -354,6 +362,16 @@ if(NOT UAPP_ENABLE_FUZZING)
     add_subdirectory(core/capi)
 endif()
 
+# api/ — the uapp-server HTTP service. Added straight after core/capi, same
+# "consumer of the composition root" relationship tools/ has, and skipped
+# under fuzzing for the same reason core/capi itself is: it is not on the
+# untrusted-input path being fuzzed.
+if(UAPP_BUILD_SERVER AND NOT UAPP_ENABLE_FUZZING)
+    include(cmake/UappHttp.cmake)
+    include(cmake/UappJson.cmake)
+    add_subdirectory(api)
+endif()
+
 # tests/fuzz/ is added OUTSIDE the UAPP_BUILD_TESTS block on purpose. A fuzz
 # target is not a unit test — it has no pass/fail, it is never added to ctest,
 # and it is driven by a corpus rather than by assertions — so tying it to the
@@ -381,6 +399,7 @@ endif()
 message(STATUS "uapp: build type          = ${CMAKE_BUILD_TYPE}")
 message(STATUS "uapp: tests               = ${UAPP_BUILD_TESTS}")
 message(STATUS "uapp: tools               = ${UAPP_BUILD_TOOLS}")
+message(STATUS "uapp: server (api/)       = ${UAPP_BUILD_SERVER}")
 message(STATUS "uapp: sanitizers          = ${UAPP_ENABLE_SANITIZERS}")
 message(STATUS "uapp: fuzzing             = ${UAPP_ENABLE_FUZZING}")
 message(STATUS "uapp: warnings-as-errors  = ${UAPP_WARNINGS_AS_ERRORS}")

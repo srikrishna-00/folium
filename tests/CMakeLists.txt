@@ -94,6 +94,30 @@ add_test(NAME uapp.search.edits   COMMAND uapp_search_tests "editing")
 add_test(NAME uapp.search.deletes COMMAND uapp_search_tests "deleting")
 add_test(NAME uapp.search.hostile COMMAND uapp_search_tests "hostile")
 
+# ---------------------------------------------------------------------------
+# api/ — uapp-server's route handlers (spec: squishy-roaming-comet plan, M1+).
+#
+# Guarded on UAPP_BUILD_SERVER because uapp_server_routes only exists when
+# api/ is added from the root CMakeLists.txt; a tests-on/server-off configure
+# must not fail looking for a target that was never created.
+#
+# Calls handlers directly against the plain transport::Request/Response
+# types — no listening socket, no httplib.h in this binary at all (that
+# boundary is the whole point of api/src/transport/http_server.h).
+# ---------------------------------------------------------------------------
+if(UAPP_BUILD_SERVER AND NOT UAPP_ENABLE_FUZZING)
+    add_executable(uapp_api_tests
+        support/test_main.cpp
+        api/health_test.cpp)
+
+    target_include_directories(uapp_api_tests PRIVATE support)
+
+    target_link_libraries(uapp_api_tests
+        PRIVATE uapp_server_routes uapp::compiler_options)
+
+    add_test(NAME uapp.api.health COMMAND uapp_api_tests)
+endif()
+
 set_tests_properties(uapp.search.unit uapp.search.edits uapp.search.deletes
                      uapp.search.hostile PROPERTIES TIMEOUT 120)
 

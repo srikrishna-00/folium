@@ -1,0 +1,19 @@
+project:  cpp-httplib (yhirose/cpp-httplib)
+tag:      v0.62.0
+file:     httplib.h
+url:      https://raw.githubusercontent.com/yhirose/cpp-httplib/v0.62.0/httplib.h
+sha256:   2d02fed52c7ddc501bbc489c770bcd7e4e92cf257a59c0b9048d59133bdaf7a0
+license:  MIT (LICENSE in this directory, fetched from the same tag)
+
+Fetched by hand (no FetchContent, no file(DOWNLOAD) — see README.md "why this
+looks different from both pdfium and libsodium"). Re-pin by re-running:
+
+    curl -fsSL -o third_party/httplib/httplib.h \
+        https://raw.githubusercontent.com/yhirose/cpp-httplib/<new-tag>/httplib.h
+    shasum -a 256 third_party/httplib/httplib.h   # update sha256 above
+    curl -fsSL -o third_party/httplib/LICENSE \
+        https://raw.githubusercontent.com/yhirose/cpp-httplib/<new-tag>/LICENSE
+
+Used for both roles in this project: the HTTP server (`api/`) and the
+outbound HTTPS client to the Anthropic API (`ai/remote`). HTTPS requires
+`CPPHTTPLIB_OPENSSL_SUPPORT` + linking OpenSSL — see cmake/UappOpenSsl.cmake.
