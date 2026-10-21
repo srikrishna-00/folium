@@ -531,6 +531,32 @@ set_tests_properties(uapp.capi.file.slice uapp.capi.file.boundary
                      PROPERTIES TIMEOUT 120)
 
 # ---------------------------------------------------------------------------
+# pdf-engine/writer — the PDF WRITING surface (images -> PDF).
+#
+# UNCONDITIONAL, unlike pdf-engine/reader just below: uapp::pdf_writer has no
+# PDFium dependency at all (see pdf-engine/writer/CMakeLists.txt), so a build
+# with no vendored PDFium must still get real coverage for it, not a silent
+# gap. The stronger claim — that a real PDF reader can open what this module
+# writes — is proven separately, in uapp_pdf_tests' "pdf.roundtrip" case
+# below, because THAT needs PDFium and so can only run when it is present.
+# ---------------------------------------------------------------------------
+add_executable(uapp_pdf_writer_tests
+    support/test_main.cpp
+    pdf_engine/pdf_writer_test.cpp)
+
+target_include_directories(uapp_pdf_writer_tests PRIVATE support pdf_engine)
+
+target_link_libraries(uapp_pdf_writer_tests
+    PRIVATE uapp::pdf_writer uapp::compiler_options)
+
+add_test(NAME uapp.pdf_writer.build   COMMAND uapp_pdf_writer_tests "writer.build")
+add_test(NAME uapp.pdf_writer.decode  COMMAND uapp_pdf_writer_tests "writer.decode")
+add_test(NAME uapp.pdf_writer.reject  COMMAND uapp_pdf_writer_tests "writer.reject")
+
+set_tests_properties(uapp.pdf_writer.build uapp.pdf_writer.decode uapp.pdf_writer.reject
+                     PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
 # pdf-engine/reader — spec section 11, the viewing slice only.
 #
 # Conditional, and that is the point of the condition: PDF support depends on
@@ -552,9 +578,14 @@ set_tests_properties(uapp.capi.file.slice uapp.capi.file.boundary
 # into the public interface, this target would need an include path it has
 # not been given and the build would fail.
 #
-# Three CTest entries over one binary, split by name filter, because the
-# three failure modes have three different meanings: "the PDF API is wrong",
-# "the pixels are wrong", and "a hostile file got through".
+# Four CTest entries over one binary now, split by name filter, because the
+# four failure modes have four different meanings: "the PDF API is wrong",
+# "the pixels are wrong", "a hostile file got through", and (the newest)
+# "our own writer's output does not actually open in a real PDF reader".
+# That fourth case is why this binary ALSO links uapp::pdf_writer now — it
+# is the one place in the whole test suite that can check both halves of
+# round-trip correctness in one process: write with pdf-engine/writer, open
+# and render with pdf-engine/reader, same real PDFium underneath the latter.
 # ---------------------------------------------------------------------------
 if(UAPP_PDF_ENABLED)
     add_executable(uapp_pdf_tests
@@ -564,13 +595,14 @@ if(UAPP_PDF_ENABLED)
     target_include_directories(uapp_pdf_tests PRIVATE support pdf_engine)
 
     target_link_libraries(uapp_pdf_tests
-        PRIVATE uapp::pdf_reader uapp::compiler_options)
+        PRIVATE uapp::pdf_reader uapp::pdf_writer uapp::compiler_options)
 
     add_test(NAME uapp.pdf.read      COMMAND uapp_pdf_tests "pdf.read")
     add_test(NAME uapp.pdf.render    COMMAND uapp_pdf_tests "pdf.render")
+    add_test(NAME uapp.pdf.roundtrip COMMAND uapp_pdf_tests "pdf.roundtrip")
     add_test(NAME uapp.pdf.malformed COMMAND uapp_pdf_tests "pdf.malformed")
 
-    set_tests_properties(uapp.pdf.read uapp.pdf.render uapp.pdf.malformed
+    set_tests_properties(uapp.pdf.read uapp.pdf.render uapp.pdf.roundtrip uapp.pdf.malformed
                          PROPERTIES TIMEOUT 120)
 
     # ------------------------------------------------------------------------

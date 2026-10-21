@@ -1,17 +1,21 @@
 # pdf-engine/ — spec section 11.
 #
-# Added only when UAPP_ENABLE_PDF is ON (see the root CMakeLists), because
-# every target under here needs a vendored PDFium and the rest of the project
-# must keep configuring and building for anyone who has not fetched one.
+# This directory is now added UNCONDITIONALLY from the root CMakeLists —
+# see the root's own comment at the add_subdirectory(pdf-engine) call for
+# why. What's still conditional is `reader` specifically, since every
+# target under IT needs a vendored PDFium and the rest of the project must
+# keep configuring and building for anyone who has not fetched one.
 #
-# `reader` is the first and, at present, the only piece — and the split is not
-# ceremonial. Everything else section 11 lists divides cleanly into two
-# groups: things that only READ a document (search, thumbnails, page
-# navigation, PDF-to-image) and things that REWRITE one (merge, split,
-# rotate, redaction, signatures, encryption). The second group is QPDF's job,
-# not PDFium's (file-format-support.md §7: "PDFium ... parse + render",
-# "QPDF ... structure, encryption"), and it will be a sibling directory with a
-# different dependency. Keeping the reader in its own library means the day a
-# writer arrives, "the viewer cannot modify a file" is a property of the build
-# graph rather than of everyone's memory.
-add_subdirectory(reader)
+# `reader` and `writer` split cleanly along the line this directory's own
+# comment predicted before `writer` existed: things that only READ a
+# document (search, thumbnails, page navigation, PDF-to-image) and things
+# that WRITE one (images-to-PDF, and — composed with reader's render_page()
+# — a rasterizing merge/split/rotate/organize; see
+# pdf-engine/writer/include/uapp/pdf/writer.h for exactly what that module
+# does and does not do). `writer` has no PDFium dependency at all (it is its
+# own minimal PDF syntax generator over stb_image for JPEG), which is why it
+# is unconditional here while `reader` stays gated.
+if(UAPP_PDF_ENABLED)
+    add_subdirectory(reader)
+endif()
+add_subdirectory(writer)

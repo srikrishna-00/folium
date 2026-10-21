@@ -350,9 +350,16 @@ if(NOT UAPP_ENABLE_PDF STREQUAL "OFF")
     endif()
 endif()
 
-if(UAPP_PDF_ENABLED)
-    add_subdirectory(pdf-engine)
-endif()
+# pdf-engine/ is now added UNCONDITIONALLY, which is new: pdf-engine/writer
+# (images -> PDF, no PDFium dependency at all — see its own CMakeLists.txt)
+# does not need UAPP_PDF_ENABLED, and gating the whole directory behind it
+# would make that module unavailable on a build with no PDFium vendored for
+# no reason. pdf-engine/CMakeLists.txt itself still gates ONLY
+# add_subdirectory(reader) behind UAPP_PDF_ENABLED, preserving the existing
+# "the viewer needs a vendored PDFium, the rest of the build does not"
+# contract for that one piece.
+include(cmake/UappStb.cmake)
+add_subdirectory(pdf-engine)
 
 # core/capi is added HERE rather than from core/CMakeLists.txt, and the order
 # is load-bearing: libuapp_capi is the composition root that binds the abstract

@@ -406,6 +406,21 @@ uapp_status_t to_c_status(Status s) noexcept {
         case Status::OcrRecognitionFailed:
         case Status::OcrResultTooLarge:
             return UAPP_STATUS_UNEXPECTED;
+
+        // pdf-engine/writer: NOT MINTED, same test as every module above —
+        // did the core grow a code, can a C caller reach it. The core grew
+        // six; a C caller can reach none, because there is no uapp_pdf_write.h
+        // yet (the server reaches this module directly as a C++ library
+        // today — see api/CMakeLists.txt — not through core/capi). Flattening
+        // costs nothing now; minting real 14xx constants is the next ABI
+        // bump's job once a C binding actually needs this surface.
+        case Status::PdfWriterPageCountExceeded:
+        case Status::PdfWriterDimensionTooLarge:
+        case Status::PdfWriterTotalPixelsTooLarge:
+        case Status::PdfWriterRotationInvalid:
+        case Status::PdfWriterEncodeFailed:
+        case Status::PdfWriterImageMalformed:
+            return UAPP_STATUS_UNEXPECTED;
     }
     // A code the core added and this layer has not been taught. We must not
     // guess a meaning for it; say so honestly instead.

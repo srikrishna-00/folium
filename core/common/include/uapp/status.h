@@ -290,6 +290,19 @@ enum class Status : std::int32_t {
     OcrImageBufferTooSmall    = 1307,  ///< the caller's pixel buffer cannot hold that geometry
     OcrRecognitionFailed      = 1308,  ///< Tesseract's recogniser returned failure for the page
     OcrResultTooLarge         = 1309,  ///< more blocks, or more text, than this build will return
+
+    // pdf-engine/writer (spec: new PDF toolkit work, see
+    // pdf-engine/writer/include/uapp/pdf/writer.h). A separate block from
+    // the 7xx PDF READER codes on purpose: writing and reading are different
+    // engines with different failure shapes, and the reader's codes (wrong
+    // password, page not found, render buffer too small) describe conditions
+    // this module cannot produce.
+    PdfWriterPageCountExceeded = 1400,  ///< more pages than WriterLimits::max_pages
+    PdfWriterDimensionTooLarge = 1401,  ///< a page image's width or height past max_dimension
+    PdfWriterTotalPixelsTooLarge = 1402,  ///< sum of every page's pixels past max_total_pixels
+    PdfWriterRotationInvalid   = 1403,  ///< a PageImage::rotate_quarter_turns outside [0,3]
+    PdfWriterEncodeFailed      = 1404,  ///< the JPEG encoder refused a page that passed every check above
+    PdfWriterImageMalformed    = 1405,  ///< decode_image_to_rgb(): bytes are not a recognisable image
 };
 
 /// True iff the operation succeeded. Prefer `if (!uapp::is_ok(s))` over

@@ -1,0 +1,54 @@
+project:  stb (nothings/stb) — Sean Barrett's single-header public-domain libraries
+commit:   a7d4c2175630e1ea5b6f8dd00ab96fed0b97b96d
+files:    stb_image_write.h  (image/JPEG/PNG encoding — used to write PDF page images)
+          stb_image.h        (image decoding — used to read uploaded JPG/PNG/etc.)
+url:      https://raw.githubusercontent.com/nothings/stb/<commit>/<file>
+sha256 (stb_image_write.h): cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05
+sha256 (stb_image.h):       594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3
+license:  Public domain / MIT (LICENSE in this directory)
+
+Vendored as committed source text, same shape and same rationale as
+third_party/httplib and third_party/nlohmann_json — see
+third_party/httplib/README.md. stb has no tagged releases, so this pins a
+specific commit rather than a tag.
+
+Re-pin by re-running:
+
+    SHA=<new-commit>
+    curl -fsSL -o third_party/stb/include/stb_image_write.h \
+        "https://raw.githubusercontent.com/nothings/stb/$SHA/stb_image_write.h"
+    curl -fsSL -o third_party/stb/include/stb_image.h \
+        "https://raw.githubusercontent.com/nothings/stb/$SHA/stb_image.h"
+    shasum -a 256 third_party/stb/include/stb_image_write.h third_party/stb/include/stb_image.h
+    # update the two sha256 lines and the commit line above
+
+Used by pdf-engine/writer (packing raster images into a new PDF, the
+foundation for images-to-PDF / scan-to-PDF / and raster-based
+merge/split/rotate/organize built on top of the existing read-only PDF
+engine) and by the document-scanner image pipeline.
+
+LOCAL PATCHES (the one deliberate deviation from the committed-verbatim
+rule every other file in this directory follows):
+
+  stb_image_write.h, stbiw__jpg_writeBits / stbiw__jpg_processDU / the
+  bitBuf local in stbi_write_jpg_core: `int bitBuf` -> `unsigned int bitBuf`
+  (and the pointer/parameter types that carry it). Upstream's JPEG encoder
+  left-shifts this bit-packing accumulator once enough bits have
+  accumulated to set its top bit, which is a left shift of a negative
+  `int` — undefined behaviour in C/C++. Never observed on the macOS/Clang
+  dev host; caught by UBSan inside a real Ubuntu/GCC container (same shape
+  of gap this project's whole CI setup exists to catch — see the git log
+  for the HKDF and conversion-engine bugs found the same way). `unsigned
+  int` makes every operation on this variable well-defined modular
+  arithmetic over the IDENTICAL bit pattern, so the encoded JPEG bytes are
+  unchanged — this is a standards-conformance fix, not a behaviour change,
+  confirmed by pdf-engine's own round-trip test (write with this encoder,
+  open and render the result with the real PDFium-backed reader) passing
+  before and after.
+
+  On re-pinning to a newer commit (see "Re-pin by re-running" above): check
+  whether upstream has fixed this at https://github.com/nothings/stb
+  (search for stbiw__jpg_writeBits); if so, drop this patch and the
+  "UAPP LOCAL PATCH" comments in the vendored file. If not, reapply it —
+  grep the freshly-fetched file for "int bitBuf" to find the same three
+  spots.

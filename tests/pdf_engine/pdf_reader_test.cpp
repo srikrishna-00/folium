@@ -25,6 +25,7 @@
 
 #include "test_framework.h"
 #include "uapp/pdf/document.h"
+#include "uapp/pdf/writer.h"
 #include "uapp/status.h"
 
 #include "pdf_fixture.h"
@@ -234,6 +235,75 @@ UAPP_TEST("pdf.render writes real pixels into the caller's buffer") {
     UAPP_CHECK_MSG(outside[0] > 200 && outside[1] > 200 && outside[2] > 200,
                    "corner of the page should be the white background");
     UAPP_CHECK_MSG(outside[3] == 0xFF, "background alpha should be opaque");
+}
+
+// ---------------------------------------------------------------------------
+// pdf.roundtrip — pdf-engine/writer's output, opened by THIS module
+// ---------------------------------------------------------------------------
+//
+// The one test in the whole suite that proves both halves of round-trip
+// correctness in a single process: pdf-engine/writer builds a PDF from
+// scratch with no PDFium involvement at all, and THIS file — which already
+// has a real PDFium underneath it — opens and renders that exact output.
+// pdf_writer_test.cpp (unconditional, no PDFium needed) checks the writer's
+// syntax is well-formed and that stb's own decoder can read back what stb's
+// own encoder wrote; this is the stronger claim neither side can check
+// alone: a REAL PDF reader, independent of the code that wrote the file,
+// opens it successfully and reports the pixels that were actually asked for.
+
+UAPP_TEST("pdf.roundtrip a PDF written by pdf-engine/writer opens and renders correctly") {
+    using uapp::pdf::PageImage;
+    using uapp::pdf::WriteOptions;
+    using uapp::pdf::write_images_as_pdf;
+
+    // A 120x80 image: a solid dark rectangle in the left half, light in the
+    // right half — two widely-separated sample points make a flipped or
+    // garbled render impossible to mistake for a pass.
+    const int                 width  = 120;
+    const int                 height = 80;
+    const auto                w      = static_cast<std::size_t>(width);
+    const auto                h      = static_cast<std::size_t>(height);
+    std::vector<std::uint8_t> pixels(w * h * 3);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::size_t  idx   = (static_cast<std::size_t>(y) * w + static_cast<std::size_t>(x)) * 3;
+            const std::uint8_t value = (x < width / 2) ? 10 : 240;
+            pixels[idx + 0] = value;
+            pixels[idx + 1] = value;
+            pixels[idx + 2] = value;
+        }
+    }
+
+    PageImage page;
+    page.rgb_pixels = pixels.data();
+    page.width      = width;
+    page.height     = height;
+
+    std::vector<std::uint8_t> pdf_bytes;
+    UAPP_REQUIRE_OK(write_images_as_pdf({page}, WriteOptions{}, pdf_bytes));
+
+    Document doc;
+    UAPP_REQUIRE_OK(Document::open_buffer(pdf_bytes.data(), pdf_bytes.size(), doc));
+    UAPP_CHECK_MSG(doc.page_count() == 1, "got " + std::to_string(doc.page_count()));
+
+    // Render at the SOURCE image's own pixel dimensions, so comparison is
+    // 1:1 regardless of the writer's points-per-pixel (source_dpi) choice —
+    // render_page fills exactly the requested width/height no matter what
+    // the PDF's own MediaBox says.
+    PixelBuffer buffer(width, height);
+    UAPP_REQUIRE_OK(doc.render_page(0, buffer.target()));
+
+    // JPEG is lossy, so allow real tolerance rather than an exact match —
+    // the point is "this is recognisably the image we wrote", not bit-exact
+    // reproduction.
+    const std::uint8_t* dark_region  = buffer.pixel_at(width / 4, height / 2);
+    const std::uint8_t* light_region = buffer.pixel_at(3 * width / 4, height / 2);
+    UAPP_CHECK_MSG(dark_region[0] < 60, "left half should still read as dark; got " +
+                                            std::to_string(static_cast<int>(dark_region[0])));
+    UAPP_CHECK_MSG(light_region[0] > 190, "right half should still read as light; got " +
+                                              std::to_string(static_cast<int>(light_region[0])));
+    UAPP_CHECK(dark_region[3] == 0xFF);
+    UAPP_CHECK(light_region[3] == 0xFF);
 }
 
 UAPP_TEST("pdf.render honours a padded stride and stays inside the buffer") {

@@ -139,6 +139,12 @@ const char* status_code(Status s) noexcept {
         case Status::OcrImageBufferTooSmall:     return "OCR_IMAGE_BUFFER_TOO_SMALL";
         case Status::OcrRecognitionFailed:       return "OCR_RECOGNITION_FAILED";
         case Status::OcrResultTooLarge:          return "OCR_RESULT_TOO_LARGE";
+        case Status::PdfWriterPageCountExceeded:    return "PDF_WRITER_PAGE_COUNT_EXCEEDED";
+        case Status::PdfWriterDimensionTooLarge:    return "PDF_WRITER_DIMENSION_TOO_LARGE";
+        case Status::PdfWriterTotalPixelsTooLarge:  return "PDF_WRITER_TOTAL_PIXELS_TOO_LARGE";
+        case Status::PdfWriterRotationInvalid:      return "PDF_WRITER_ROTATION_INVALID";
+        case Status::PdfWriterEncodeFailed:         return "PDF_WRITER_ENCODE_FAILED";
+        case Status::PdfWriterImageMalformed:       return "PDF_WRITER_IMAGE_MALFORMED";
     }
     // Reached only if a caller casts a bogus integer into Status. We do not
     // trust that it cannot happen just because the enum is closed.
@@ -352,6 +358,18 @@ const char* status_message(Status s) noexcept {
             return "The OCR engine failed while recognising that image.";
         case Status::OcrResultTooLarge:
             return "That image produced more OCR output than this build will return.";
+        case Status::PdfWriterPageCountExceeded:
+            return "More pages were requested than this build's PDF writer allows.";
+        case Status::PdfWriterDimensionTooLarge:
+            return "A page image's width or height is past this build's PDF writer limit.";
+        case Status::PdfWriterTotalPixelsTooLarge:
+            return "The combined size of every page's image is past this build's PDF writer limit.";
+        case Status::PdfWriterRotationInvalid:
+            return "A page's rotation must be 0, 1, 2 or 3 quarter turns.";
+        case Status::PdfWriterEncodeFailed:
+            return "The JPEG encoder refused a page image that otherwise passed every check.";
+        case Status::PdfWriterImageMalformed:
+            return "Those bytes are not a recognisable image format.";
     }
     return "Unrecognised status code.";
 }
