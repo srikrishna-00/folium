@@ -15,7 +15,7 @@ constexpr const char* kPage = R"HTML(<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Folium</title>
+<title>Notetrack</title>
 <style>
   :root {
     --fg:#2b2724; --fg-muted:#8a7f74; --bg:#ffffff; --bg-sidebar:#f7f5f2;
@@ -130,7 +130,7 @@ constexpr const char* kPage = R"HTML(<!doctype html>
 <body>
 
 <div id="sidebar">
-  <div class="brand">📄 Folium</div>
+  <div class="brand">📄 Notetrack</div>
   <div class="tabs">
     <button id="tab-pages" class="active" onclick="switchTab('pages')">Pages</button>
     <button id="tab-notes" onclick="switchTab('notes')">Notes</button>
