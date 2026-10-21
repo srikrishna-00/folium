@@ -234,11 +234,11 @@ constexpr const char* kPage = R"HTML(<!doctype html>
         <div class="desc">Open a PDF and view it page by page, rendered by a real PDF engine.</div>
         <div class="badge">Ready</div>
       </div>
-      <div class="tool-card coming-soon" title="Not built yet">
+      <div class="tool-card" onclick="switchTab('tools')">
         <div class="icon">🔗📄</div>
         <div class="title">Merge PDFs</div>
-        <div class="desc">Combine multiple PDFs into one document.</div>
-        <div class="badge">Coming soon</div>
+        <div class="desc">Combine multiple PDFs into one document, in the order you pick them.</div>
+        <div class="badge">Ready</div>
       </div>
       <div class="tool-card coming-soon" title="Not built yet">
         <div class="icon">✂️📄</div>
@@ -290,11 +290,20 @@ constexpr const char* kPage = R"HTML(<!doctype html>
 
   <div class="view simple-view" id="view-tools">
     <div class="back-link" onclick="switchTab('home')">← Home</div>
-    <h1>Images to PDF</h1>
-    <div class="subtitle">Pick one or more images — get back one real, multi-page PDF, built by this server's own PDF engine.</div>
+    <h1>Tools</h1>
+    <div class="subtitle">Document tools, run by this server's own PDF engine — nothing uploaded to a third party.</div>
+
+    <h2 style="font-size:1.05rem; margin-top:2rem;">Images to PDF</h2>
+    <div class="status" style="margin-top:-0.3rem; margin-bottom:0.6rem;">Pick one or more images — get back one real, multi-page PDF.</div>
     <input type="file" id="tool-images-file" accept="image/*" multiple>
     <button class="btn" onclick="imagesToPdf()">Convert to PDF</button>
     <div class="status" id="tool-images-status"></div>
+
+    <h2 style="font-size:1.05rem; margin-top:2.4rem;">Merge PDFs</h2>
+    <div class="status" style="margin-top:-0.3rem; margin-bottom:0.6rem;">Pick two or more PDFs, in the order you want them combined.</div>
+    <input type="file" id="tool-merge-file" accept="application/pdf" multiple>
+    <button class="btn" onclick="mergePdfs()">Merge into one PDF</button>
+    <div class="status" id="tool-merge-status"></div>
   </div>
 
 </div>
@@ -829,34 +838,51 @@ async function uploadPdf() {
 // ---------------------------------------------------------------------
 // tools
 // ---------------------------------------------------------------------
+// Triggers a real browser download of a Blob the server returned as raw
+// bytes (not a link to one) — shared by every /tools/* route that hands
+// back a file rather than JSON.
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function postFilesExpectingPdf(path, files, fieldName) {
+  const form = new FormData();
+  for (const file of files) { form.append(fieldName, file, file.name); }
+  const res = await fetch(path, { method: 'POST', body: form });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error((body && body.error && body.error.message) || ('HTTP ' + res.status));
+  }
+  return res.blob();
+}
+
 async function imagesToPdf() {
   const input = document.getElementById('tool-images-file');
   if (!input.files.length) { setStatus('tool-images-status', 'choose at least one image first', true); return; }
   try {
-    const form = new FormData();
-    for (const file of input.files) { form.append('file', file, file.name); }
-
-    const res = await fetch('/tools/images-to-pdf', { method: 'POST', body: form });
-    if (!res.ok) {
-      const body = await res.json().catch(() => null);
-      throw new Error((body && body.error && body.error.message) || ('HTTP ' + res.status));
-    }
-    const pdfBlob = await res.blob();
-
-    // Trigger a real browser download — the server returned actual PDF
-    // bytes, not a link to one, so this is the client's own job.
-    const url = URL.createObjectURL(pdfBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'images.pdf';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-
+    const pdfBlob = await postFilesExpectingPdf('/tools/images-to-pdf', input.files, 'file');
+    downloadBlob(pdfBlob, 'images.pdf');
     setStatus('tool-images-status', 'Converted ' + input.files.length + ' image(s) into a ' +
                                        pdfBlob.size + '-byte PDF. Downloaded.');
   } catch (e) { setStatus('tool-images-status', e.message, true); }
+}
+
+async function mergePdfs() {
+  const input = document.getElementById('tool-merge-file');
+  if (input.files.length < 2) { setStatus('tool-merge-status', 'choose at least two PDFs to merge', true); return; }
+  try {
+    const pdfBlob = await postFilesExpectingPdf('/tools/merge-pdf', input.files, 'file');
+    downloadBlob(pdfBlob, 'merged.pdf');
+    setStatus('tool-merge-status', 'Merged ' + input.files.length + ' PDFs into a ' +
+                                      pdfBlob.size + '-byte file. Downloaded.');
+  } catch (e) { setStatus('tool-merge-status', e.message, true); }
 }
 
 // ---------------------------------------------------------------------
