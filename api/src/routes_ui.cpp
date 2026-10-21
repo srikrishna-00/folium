@@ -135,6 +135,7 @@ constexpr const char* kPage = R"HTML(<!doctype html>
     <button id="tab-pages" class="active" onclick="switchTab('pages')">Pages</button>
     <button id="tab-notes" onclick="switchTab('notes')">Notes</button>
     <button id="tab-pdf" onclick="switchTab('pdf')">PDF</button>
+    <button id="tab-tools" onclick="switchTab('tools')">Tools</button>
   </div>
   <button id="new-page-btn" onclick="createPage()">+ New page</button>
   <div id="page-list"></div>
@@ -172,6 +173,15 @@ constexpr const char* kPage = R"HTML(<!doctype html>
     <div id="pdf-info" class="status"></div>
     <canvas id="pdf-canvas" width="500" height="650"></canvas>
     <div class="status" id="pdf-status"></div>
+  </div>
+
+  <div class="panel" id="panel-tools">
+    <h2>Tools</h2>
+    <h3 style="font-size:0.95rem;">Images to PDF</h3>
+    <div class="hint-banner" style="margin-bottom:0.75rem;">Pick one or more images (any order) and get back one real, multi-page PDF — built by this server's own PDF writer, not a third-party service.</div>
+    <input type="file" id="tool-images-file" accept="image/*" multiple>
+    <button onclick="imagesToPdf()">Convert to PDF</button>
+    <div class="status" id="tool-images-status"></div>
   </div>
 </div>
 
@@ -211,8 +221,10 @@ function switchTab(name) {
   document.getElementById('tab-pages').classList.toggle('active', name === 'pages');
   document.getElementById('tab-notes').classList.toggle('active', name === 'notes');
   document.getElementById('tab-pdf').classList.toggle('active', name === 'pdf');
+  document.getElementById('tab-tools').classList.toggle('active', name === 'tools');
   document.getElementById('panel-notes').classList.toggle('visible', name === 'notes');
   document.getElementById('panel-pdf').classList.toggle('visible', name === 'pdf');
+  document.getElementById('panel-tools').classList.toggle('visible', name === 'tools');
   const showPagesArea = name === 'pages';
   document.getElementById('empty-state').style.display = (showPagesArea && !currentPageId) ? 'flex' : 'none';
   document.getElementById('editor').style.display = (showPagesArea && currentPageId) ? 'block' : 'none';
@@ -678,6 +690,39 @@ async function uploadPdf() {
     ctx.putImageData(imageData, 0, 0);
     setStatus('pdf-status', 'Rendered.');
   } catch (e) { setStatus('pdf-status', e.message, true); }
+}
+
+// ---------------------------------------------------------------------
+// tools (secondary panel)
+// ---------------------------------------------------------------------
+async function imagesToPdf() {
+  const input = document.getElementById('tool-images-file');
+  if (!input.files.length) { setStatus('tool-images-status', 'choose at least one image first', true); return; }
+  try {
+    const form = new FormData();
+    for (const file of input.files) { form.append('file', file, file.name); }
+
+    const res = await fetch('/tools/images-to-pdf', { method: 'POST', body: form });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error((body && body.error && body.error.message) || ('HTTP ' + res.status));
+    }
+    const pdfBlob = await res.blob();
+
+    // Trigger a real browser download — the server returned actual PDF
+    // bytes, not a link to one, so this is the client's own job.
+    const url = URL.createObjectURL(pdfBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'images.pdf';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    setStatus('tool-images-status', 'Converted ' + input.files.length + ' image(s) into a ' +
+                                       pdfBlob.size + '-byte PDF. Downloaded.');
+  } catch (e) { setStatus('tool-images-status', e.message, true); }
 }
 
 // ---------------------------------------------------------------------
