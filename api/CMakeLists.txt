@@ -42,12 +42,14 @@ add_library(uapp_server_routes STATIC
     src/routes_search.cpp
     src/routes_file.cpp
     src/routes_blocks.cpp
+    src/routes_tools.cpp
     src/routes_ui.cpp)
 
 target_link_libraries(uapp_server_routes
     PUBLIC  uapp_server_transport
             uapp::capi
             uapp::json
+            uapp::pdf_writer
     PRIVATE uapp::compiler_options)
 
 # routes_pdf.cpp exists only when pdf-engine/ itself was built

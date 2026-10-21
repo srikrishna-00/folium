@@ -48,6 +48,12 @@ Request to_request(const httplib::Request& req) {
     for (const auto& [key, value] : req.headers) {
         out.headers.emplace_back(key, value);
     }
+    if (req.is_multipart_form_data()) {
+        out.files.reserve(req.form.files.size());
+        for (const auto& [field_name, file] : req.form.files) {
+            out.files.push_back(UploadedFile{field_name, file.filename, file.content});
+        }
+    }
     // req.matches[0] is the whole match; capture groups start at [1].
     if (req.matches.size() > 1) {
         out.path_params.reserve(req.matches.size() - 1);

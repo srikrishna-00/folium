@@ -15,6 +15,7 @@
 #include "routes_health.h"
 #include "routes_notes.h"
 #include "routes_search.h"
+#include "routes_tools.h"
 #include "routes_ui.h"
 #include "transport/http_server.h"
 
@@ -126,6 +127,7 @@ int main(int argc, char** argv) {
     uapp::api::register_search_routes(server, state);
     uapp::api::register_file_routes(server);
     uapp::api::register_blocks_routes(server, state);
+    uapp::api::register_tools_routes(server);
 #if UAPP_PDF_ENABLED
     uapp::api::register_pdf_routes(server, state);
 #endif

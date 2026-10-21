@@ -24,12 +24,31 @@
 
 namespace uapp::api::transport {
 
+// One uploaded file from a multipart/form-data request — the "choose N
+// files" case a single raw `body` cannot express (the existing /pdf and
+// /files/detect routes use `body` directly because they only ever take
+// ONE file with no surrounding form fields; a multi-file tool like
+// images-to-PDF needs this instead).
+struct UploadedFile {
+    std::string field_name;  // the <input name="..."> this file came from
+    std::string filename;    // the ORIGINAL filename the browser sent — advisory
+                             // only, same rule uapp_file_detect_buffer() already
+                             // applies to a filename hint: never trusted over content
+    std::string content;     // raw bytes
+};
+
 struct Request {
     std::string method;        // "GET", "POST", ...
     std::string path;          // "/notes/ab12..."
-    std::string body;          // raw request body, empty for GET
+    std::string body;          // raw request body, empty for GET or multipart
     std::vector<std::pair<std::string, std::string>> query;    // already-decoded ?key=value pairs
     std::vector<std::pair<std::string, std::string>> headers;
+
+    // Populated only for a multipart/form-data request (see
+    // HttpServer::post()'s own note on is_multipart_form_data()); empty
+    // otherwise, including for the single-raw-body upload style /pdf and
+    // /files/detect already use.
+    std::vector<UploadedFile> files;
 
     // Positional regex capture groups from the route PATTERN a handler was
     // registered under (e.g. "/notes/([0-9a-f]{32})" captures the id as
