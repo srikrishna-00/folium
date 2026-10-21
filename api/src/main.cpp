@@ -15,6 +15,7 @@
 #include "routes_health.h"
 #include "routes_notes.h"
 #include "routes_search.h"
+#include "routes_ui.h"
 #include "transport/http_server.h"
 
 #if UAPP_PDF_ENABLED
@@ -99,7 +100,10 @@ int main(int argc, char** argv) {
     if (!required_token.empty()) {
         server.set_pre_route_hook([&required_token](const uapp::api::transport::Request& req,
                                                      uapp::api::transport::Response& res) {
-            if (req.path == "/healthz") {
+            if (req.path == "/healthz" || req.path == "/") {
+                // The static preview shell itself carries no data, so it
+                // loads without the token; its own fetch() calls to the
+                // real data routes below still need it.
                 return true;
             }
             const std::string authorization = req.header("Authorization");
@@ -117,6 +121,7 @@ int main(int argc, char** argv) {
     }
 
     server.get("/healthz", uapp::api::handle_healthz);
+    uapp::api::register_ui_routes(server);
     uapp::api::register_notes_routes(server, state);
     uapp::api::register_search_routes(server, state);
     uapp::api::register_file_routes(server);

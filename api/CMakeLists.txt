@@ -41,7 +41,8 @@ add_library(uapp_server_routes STATIC
     src/routes_notes.cpp
     src/routes_search.cpp
     src/routes_file.cpp
-    src/routes_blocks.cpp)
+    src/routes_blocks.cpp
+    src/routes_ui.cpp)
 
 target_link_libraries(uapp_server_routes
     PUBLIC  uapp_server_transport
