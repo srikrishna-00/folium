@@ -10,6 +10,17 @@ namespace {
 // problem this page does not have. No AI/LLM anywhere in this page or the
 // routes it calls, by explicit product decision — this is a document/
 // notes/PDF app, not a chat app.
+//
+// LAYOUT, per explicit user feedback that the first version "felt like a
+// developer console": a proper Home dashboard (recent pages + a tool-card
+// grid, the shape iLovePDF and a WPS-style launcher both use) instead of a
+// blank "select a page" screen, and a left nav styled as icon+label rows
+// (Home / Notes / PDF Viewer / Tools) with the page TREE underneath as its
+// own section — the same split Notion's own sidebar makes between
+// top-level destinations and the page list. Every engineering caveat that
+// used to sit in a visible hint banner (no server-side "list all pages",
+// etc.) moved into code comments here instead — true and worth recording,
+// not something a person using the app needs to read.
 constexpr const char* kPage = R"HTML(<!doctype html>
 <html lang="en">
 <head>
@@ -19,7 +30,8 @@ constexpr const char* kPage = R"HTML(<!doctype html>
 <style>
   :root {
     --fg:#2b2724; --fg-muted:#8a7f74; --bg:#ffffff; --bg-sidebar:#f7f5f2;
-    --accent:#2d6a4f; --border:#e8e4de; --hover:#efece6;
+    --accent:#2d6a4f; --accent-soft:#e4ede8; --border:#e8e4de; --hover:#efece6;
+    --card-shadow: 0 1px 2px rgba(43,39,36,0.06), 0 1px 1px rgba(43,39,36,0.04);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -30,54 +42,104 @@ constexpr const char* kPage = R"HTML(<!doctype html>
 
   /* --- sidebar --- */
   #sidebar {
-    width: 260px; flex: 0 0 260px; background: var(--bg-sidebar);
+    width: 250px; flex: 0 0 250px; background: var(--bg-sidebar);
     border-right: 1px solid var(--border); display: flex; flex-direction: column;
     height: 100vh; overflow-y: auto;
   }
-  #sidebar .brand { padding: 0.9rem 1rem 0.5rem; font-weight: 600; font-size: 0.95rem; }
-  #sidebar .tabs { display: flex; gap: 0.25rem; padding: 0 0.6rem; margin-bottom: 0.4rem; }
-  #sidebar .tabs button {
-    flex: 1; background: none; border: none; padding: 0.35rem 0.3rem; font-size: 0.75rem;
-    color: var(--fg-muted); border-radius: 6px; cursor: pointer;
+  #sidebar .brand {
+    padding: 1rem 1rem 0.6rem; font-weight: 700; font-size: 1rem;
+    display: flex; align-items: center; gap: 0.45rem;
   }
-  #sidebar .tabs button.active { background: var(--hover); color: var(--fg); font-weight: 600; }
-  #new-page-btn {
-    margin: 0.3rem 0.8rem 0.5rem; padding: 0.4rem 0.6rem; background: none;
-    border: 1px dashed #c9c2b8; border-radius: 6px; color: var(--fg-muted);
-    font-size: 0.82rem; cursor: pointer; text-align: left;
+  #sidebar .brand .brand-icon { font-size: 1.15rem; }
+
+  .nav { padding: 0 0.6rem; display: flex; flex-direction: column; gap: 1px; margin-bottom: 0.9rem; }
+  .nav-item {
+    display: flex; align-items: center; gap: 0.6rem; width: 100%; text-align: left;
+    background: none; border: none; padding: 0.42rem 0.6rem; border-radius: 7px;
+    font-size: 0.86rem; color: #4a443d; cursor: pointer;
   }
-  #new-page-btn:hover { background: var(--hover); border-style: solid; }
+  .nav-item:hover { background: var(--hover); }
+  .nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .nav-icon { font-size: 1rem; width: 1.1rem; text-align: center; }
+
+  .nav-section-label {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.3rem 1rem; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;
+    color: var(--fg-muted); text-transform: uppercase;
+  }
+  .nav-section-label .icon-btn {
+    background: none; border: none; color: var(--fg-muted); font-size: 0.95rem;
+    cursor: pointer; padding: 0.1rem 0.3rem; border-radius: 4px; line-height: 1;
+  }
+  .nav-section-label .icon-btn:hover { background: var(--hover); color: var(--fg); }
+
   #page-list { flex: 1; padding: 0 0.5rem; }
   .page-item {
     display: flex; align-items: center; justify-content: space-between; gap: 0.3rem;
-    padding: 0.4rem 0.5rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+    padding: 0.38rem 0.55rem; border-radius: 6px; cursor: pointer; font-size: 0.84rem;
     color: #4a443d;
   }
   .page-item:hover { background: var(--hover); }
-  .page-item.selected { background: #e4ede8; color: var(--accent); font-weight: 600; }
-  .page-item .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .page-item.selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .page-item .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+                       display: flex; align-items: center; gap: 0.4rem; }
   .page-item .del { opacity: 0; color: #b23a3a; font-size: 0.8rem; padding: 0 0.2rem; }
   .page-item:hover .del { opacity: 0.7; }
   .page-item .del:hover { opacity: 1; }
-  .sidebar-hint { padding: 0.6rem 1rem; font-size: 0.7rem; color: var(--fg-muted); line-height: 1.4; }
+  .empty-pages-note { padding: 0.4rem 1rem; font-size: 0.78rem; color: var(--fg-muted); }
 
   /* --- main --- */
   #main { flex: 1; height: 100vh; overflow-y: auto; }
-  #empty-state {
-    display: flex; align-items: center; justify-content: center; height: 100%;
-    color: var(--fg-muted); font-size: 0.9rem; flex-direction: column; gap: 0.6rem;
+  .view { display: none; }
+  .view.visible { display: block; }
+
+  /* --- home dashboard --- */
+  #view-home { max-width: 920px; margin: 0 auto; padding: 3rem 3rem 5rem; }
+  #view-home h1 { font-size: 1.6rem; margin: 0 0 0.3rem; }
+  #view-home .subtitle { color: var(--fg-muted); font-size: 0.92rem; margin-bottom: 2.2rem; }
+  .section-title { font-size: 0.82rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+                    color: var(--fg-muted); margin: 0 0 0.8rem; }
+  .card-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0.9rem; margin-bottom: 2.4rem; }
+  .recent-card {
+    border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem; cursor: pointer;
+    background: #fff; box-shadow: var(--card-shadow); transition: transform 0.08s, box-shadow 0.08s;
   }
-  #editor { max-width: 760px; margin: 0 auto; padding: 4rem 3rem 8rem; display: none; }
+  .recent-card:hover { border-color: var(--accent); transform: translateY(-1px); box-shadow: 0 4px 10px rgba(43,39,36,0.08); }
+  .recent-card .icon { font-size: 1.3rem; margin-bottom: 0.5rem; }
+  .recent-card .title { font-weight: 600; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .new-page-card {
+    border: 1px dashed #c9c2b8; border-radius: 10px; padding: 1rem 1.1rem; cursor: pointer;
+    display: flex; align-items: center; gap: 0.5rem; color: var(--fg-muted); font-size: 0.9rem; font-weight: 600;
+  }
+  .new-page-card:hover { background: var(--hover); border-style: solid; }
+
+  .tool-card {
+    border: 1px solid var(--border); border-radius: 12px; padding: 1.2rem 1.1rem; background: #fff;
+    box-shadow: var(--card-shadow); cursor: pointer; transition: transform 0.08s, box-shadow 0.08s;
+  }
+  .tool-card:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(43,39,36,0.09); border-color: var(--accent); }
+  .tool-card .icon { font-size: 1.6rem; margin-bottom: 0.6rem; }
+  .tool-card .title { font-weight: 700; font-size: 0.95rem; margin-bottom: 0.25rem; }
+  .tool-card .desc { font-size: 0.78rem; color: var(--fg-muted); line-height: 1.4; }
+  .tool-card.coming-soon { opacity: 0.55; cursor: default; }
+  .tool-card.coming-soon:hover { transform: none; box-shadow: var(--card-shadow); border-color: var(--border); }
+  .tool-card .badge {
+    display: inline-block; font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.03em; background: var(--accent-soft); color: var(--accent);
+    padding: 0.1rem 0.4rem; border-radius: 4px; margin-top: 0.5rem;
+  }
+  .tool-card.coming-soon .badge { background: #efece6; color: var(--fg-muted); }
+
+  /* --- page editor --- */
+  #view-page { max-width: 760px; margin: 0 auto; padding: 4rem 3rem 8rem; }
   #page-title {
-    font-size: 2.1rem; font-weight: 700; outline: none; margin-bottom: 1.5rem;
+    font-size: 2.1rem; font-weight: 700; outline: none; margin-bottom: 1.2rem;
     line-height: 1.3;
   }
   #page-title:empty::before { content: "Untitled"; color: #c9c2b8; }
   #save-indicator { font-size: 0.72rem; color: var(--fg-muted); height: 1em; margin-bottom: 0.5rem; }
 
   .block-wrap { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0.15rem 0; }
-  .block-handle { width: 1.3rem; flex: 0 0 1.3rem; color: #c9c2b8; font-size: 0.8rem; text-align: center;
-                  line-height: 1.9; user-select: none; }
   .block {
     flex: 1; outline: none; padding: 0.15rem 0.2rem; border-radius: 4px; line-height: 1.6;
     font-size: 0.98rem; min-height: 1.6em;
@@ -90,7 +152,6 @@ constexpr const char* kPage = R"HTML(<!doctype html>
   .block[data-type="code"] { font-family: ui-monospace, "SF Mono", monospace; font-size: 0.85rem;
                               background: #f5f3ef; padding: 0.5rem 0.7rem; border-radius: 6px; }
   .block[data-type="divider"] { border-top: 1px solid var(--border); min-height: 0; margin: 0.8rem 0; pointer-events: none; }
-  .block[data-type="bulleted_list_item"], .block[data-type="checklist_item"] { padding-left: 0; }
   .block-marker { width: 1.1rem; flex: 0 0 1.1rem; text-align: center; padding-top: 0.2rem; color: var(--fg-muted); }
   .block-marker input[type="checkbox"] { margin: 0; }
   #add-block {
@@ -98,104 +159,162 @@ constexpr const char* kPage = R"HTML(<!doctype html>
     cursor: text; padding: 0.3rem 0.2rem;
   }
   #add-block:hover { background: #faf9f7; border-radius: 4px; }
+  .editor-hint {
+    font-size: 0.74rem; color: var(--fg-muted); margin: 0 0 1.6rem; padding: 0.5rem 0.7rem;
+    background: #faf9f7; border-radius: 8px; line-height: 1.5;
+  }
 
-  .hint-banner { font-size: 0.72rem; color: var(--fg-muted); margin: -1rem 0 2rem; }
-
-  /* --- notes / pdf panels --- */
-  .panel { max-width: 760px; margin: 0 auto; padding: 3rem; display: none; }
-  .panel.visible { display: block; }
-  .panel h2 { font-size: 1.3rem; margin-top: 0; }
-  .panel label { display: block; font-size: 0.8rem; color: var(--fg-muted); margin: 0.6rem 0 0.2rem; }
-  .panel input, .panel textarea {
-    width: 100%; padding: 0.5rem 0.7rem; border: 1px solid var(--border); border-radius: 6px;
+  /* --- notes / pdf / tools views --- */
+  .simple-view { max-width: 760px; margin: 0 auto; padding: 3rem; }
+  .simple-view h1 { font-size: 1.4rem; margin: 0 0 0.3rem; }
+  .simple-view .subtitle { color: var(--fg-muted); font-size: 0.88rem; margin-bottom: 1.8rem; }
+  .field-label { display: block; font-size: 0.8rem; color: var(--fg-muted); margin: 0.6rem 0 0.25rem; }
+  .simple-view input[type="text"], .simple-view input:not([type]), .simple-view textarea {
+    width: 100%; padding: 0.55rem 0.75rem; border: 1px solid var(--border); border-radius: 8px;
     font-size: 0.9rem; font-family: inherit;
   }
-  .panel textarea { min-height: 5rem; resize: vertical; }
-  .panel button {
-    margin-top: 0.8rem; padding: 0.5rem 1rem; border: none; border-radius: 6px;
-    background: var(--accent); color: #fff; font-size: 0.85rem; cursor: pointer;
+  .simple-view textarea { min-height: 5.5rem; resize: vertical; }
+  .btn {
+    margin-top: 0.9rem; padding: 0.55rem 1.1rem; border: none; border-radius: 8px;
+    background: var(--accent); color: #fff; font-size: 0.86rem; font-weight: 600; cursor: pointer;
   }
-  .panel button.secondary { background: #70655c; }
+  .btn:hover { opacity: 0.92; }
+  .btn.secondary { background: #70655c; }
   .note-item {
-    border: 1px solid var(--border); border-radius: 8px; padding: 0.7rem 0.9rem; margin-top: 0.6rem;
-    font-size: 0.85rem; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 10px; padding: 0.8rem 1rem; margin-top: 0.7rem;
+    font-size: 0.85rem; cursor: pointer; box-shadow: var(--card-shadow);
   }
   .note-item:hover { border-color: var(--accent); }
-  .note-item .id { font-family: ui-monospace, monospace; font-size: 0.7rem; color: #8a7f74; margin-top: 0.3rem; }
-  .status { font-size: 0.78rem; color: var(--fg-muted); margin-top: 0.5rem; min-height: 1.1em; }
+  .note-item .id { font-family: ui-monospace, monospace; font-size: 0.68rem; color: #8a7f74; margin-top: 0.35rem; }
+  .status { font-size: 0.8rem; color: var(--fg-muted); margin-top: 0.6rem; min-height: 1.1em; }
   .status.err { color: #b23a3a; }
-  canvas { border: 1px solid var(--border); margin-top: 0.8rem; max-width: 100%; }
+  canvas { border: 1px solid var(--border); border-radius: 8px; margin-top: 0.9rem; max-width: 100%; }
+
+  .back-link { font-size: 0.82rem; color: var(--fg-muted); cursor: pointer; display: inline-flex;
+               align-items: center; gap: 0.3rem; margin-bottom: 1.4rem; }
+  .back-link:hover { color: var(--accent); }
 </style>
 </head>
 <body>
 
 <div id="sidebar">
-  <div class="brand">📄 Notetrack</div>
-  <div class="tabs">
-    <button id="tab-pages" class="active" onclick="switchTab('pages')">Pages</button>
-    <button id="tab-notes" onclick="switchTab('notes')">Notes</button>
-    <button id="tab-pdf" onclick="switchTab('pdf')">PDF</button>
-    <button id="tab-tools" onclick="switchTab('tools')">Tools</button>
-  </div>
-  <button id="new-page-btn" onclick="createPage()">+ New page</button>
+  <div class="brand"><span class="brand-icon">📘</span><span>Notetrack</span></div>
+  <nav class="nav">
+    <button class="nav-item active" id="tab-home" onclick="switchTab('home')"><span class="nav-icon">🏠</span>Home</button>
+    <button class="nav-item" id="tab-notes" onclick="switchTab('notes')"><span class="nav-icon">🗒️</span>Notes</button>
+    <button class="nav-item" id="tab-pdf" onclick="switchTab('pdf')"><span class="nav-icon">📑</span>PDF Viewer</button>
+    <button class="nav-item" id="tab-tools" onclick="switchTab('tools')"><span class="nav-icon">🧰</span>Tools</button>
+  </nav>
+  <div class="nav-section-label"><span>Pages</span><button class="icon-btn" onclick="createPage()" title="New page">＋</button></div>
   <div id="page-list"></div>
-  <div class="sidebar-hint">There's no server-side "list all pages" yet — this sidebar is this browser session's own list (saved to localStorage so a reload keeps it).</div>
 </div>
 
 <div id="main">
-  <div id="empty-state">
-    <div>Select a page, or create a new one.</div>
+
+  <div class="view visible" id="view-home">
+    <h1>Welcome back</h1>
+    <div class="subtitle">Pages, notes, PDFs and document tools, all in one place.</div>
+
+    <div class="section-title">Recent pages</div>
+    <div class="card-row" id="recent-pages-row">
+      <div class="new-page-card" onclick="createPage()">＋ New page</div>
+    </div>
+
+    <div class="section-title">Tools</div>
+    <div class="card-row" id="tools-row">
+      <div class="tool-card" onclick="switchTab('tools')">
+        <div class="icon">🖼️→📑</div>
+        <div class="title">Images to PDF</div>
+        <div class="desc">Combine one or more photos or images into a single PDF.</div>
+        <div class="badge">Ready</div>
+      </div>
+      <div class="tool-card" onclick="switchTab('pdf')">
+        <div class="icon">📑</div>
+        <div class="title">PDF Viewer</div>
+        <div class="desc">Open a PDF and view it page by page, rendered by a real PDF engine.</div>
+        <div class="badge">Ready</div>
+      </div>
+      <div class="tool-card coming-soon" title="Not built yet">
+        <div class="icon">🔗📄</div>
+        <div class="title">Merge PDFs</div>
+        <div class="desc">Combine multiple PDFs into one document.</div>
+        <div class="badge">Coming soon</div>
+      </div>
+      <div class="tool-card coming-soon" title="Not built yet">
+        <div class="icon">✂️📄</div>
+        <div class="title">Split / Rotate PDF</div>
+        <div class="desc">Reorder, rotate, or pull pages out of a PDF.</div>
+        <div class="badge">Coming soon</div>
+      </div>
+      <div class="tool-card coming-soon" title="Not built yet">
+        <div class="icon">📷→📝</div>
+        <div class="title">Scan to PDF</div>
+        <div class="desc">Photograph a document, auto-crop and straighten it, export as PDF.</div>
+        <div class="badge">Coming soon</div>
+      </div>
+    </div>
   </div>
 
-  <div id="editor">
+  <div class="view" id="view-page">
+    <div class="back-link" onclick="switchTab('home')">← Home</div>
     <div id="save-indicator"></div>
     <div id="page-title" contenteditable="true" data-placeholder="Untitled"></div>
-    <div class="hint-banner">Type <code>/</code>&#8209;style shortcuts at the start of a block: <code># </code> heading, <code>- </code> bulleted, <code>1. </code> numbered, <code>[] </code> checklist, <code>&gt; </code> quote, <code>``` </code> code, <code>---</code> divider. Enter adds a block, Backspace on an empty block removes it.</div>
+    <div class="editor-hint">Type <code>#&nbsp;</code> for a heading, <code>-&nbsp;</code> or <code>1.&nbsp;</code> for a list, <code>[]&nbsp;</code> for a checklist, <code>&gt;&nbsp;</code> for a quote, <code>```&nbsp;</code> for code, <code>---</code> for a divider — Notion-style. Enter adds a block, Backspace on an empty block removes it.</div>
     <div id="blocks"></div>
     <div id="add-block">Click to add a block…</div>
   </div>
 
-  <div class="panel" id="panel-notes">
-    <h2>Notes</h2>
-    <label>Title</label><input id="note-title" placeholder="Title">
-    <label>Body</label><textarea id="note-body" placeholder="Body"></textarea>
-    <button onclick="createNote()">Create note</button>
-    <label style="margin-top:1rem">Search notes</label>
-    <div style="display:flex; gap:0.5rem;"><input id="note-query" placeholder="search term"><button class="secondary" onclick="searchNotes()">Search</button></div>
+  <div class="view simple-view" id="view-notes">
+    <div class="back-link" onclick="switchTab('home')">← Home</div>
+    <h1>Notes</h1>
+    <div class="subtitle">Quick, flat notes — separate from pages, searchable by content.</div>
+    <label class="field-label">Title</label><input type="text" id="note-title" placeholder="Title">
+    <label class="field-label">Body</label><textarea id="note-body" placeholder="Write something…"></textarea>
+    <button class="btn" onclick="createNote()">Create note</button>
+    <label class="field-label" style="margin-top:1.4rem">Search notes</label>
+    <div style="display:flex; gap:0.5rem;"><input type="text" id="note-query" placeholder="search term"><button class="btn secondary" onclick="searchNotes()">Search</button></div>
     <div id="note-list"></div>
     <div class="status" id="note-status"></div>
   </div>
 
-  <div class="panel" id="panel-pdf">
-    <h2>PDF</h2>
+  <div class="view simple-view" id="view-pdf">
+    <div class="back-link" onclick="switchTab('home')">← Home</div>
+    <h1>PDF Viewer</h1>
+    <div class="subtitle">Open any PDF and view its pages, rendered by the real PDF engine.</div>
     <input type="file" id="pdf-file" accept="application/pdf">
-    <button onclick="uploadPdf()">Upload &amp; render page 1</button>
+    <button class="btn" onclick="uploadPdf()">Open &amp; view page 1</button>
     <div id="pdf-info" class="status"></div>
     <canvas id="pdf-canvas" width="500" height="650"></canvas>
     <div class="status" id="pdf-status"></div>
   </div>
 
-  <div class="panel" id="panel-tools">
-    <h2>Tools</h2>
-    <h3 style="font-size:0.95rem;">Images to PDF</h3>
-    <div class="hint-banner" style="margin-bottom:0.75rem;">Pick one or more images (any order) and get back one real, multi-page PDF — built by this server's own PDF writer, not a third-party service.</div>
+  <div class="view simple-view" id="view-tools">
+    <div class="back-link" onclick="switchTab('home')">← Home</div>
+    <h1>Images to PDF</h1>
+    <div class="subtitle">Pick one or more images — get back one real, multi-page PDF, built by this server's own PDF engine.</div>
     <input type="file" id="tool-images-file" accept="image/*" multiple>
-    <button onclick="imagesToPdf()">Convert to PDF</button>
+    <button class="btn" onclick="imagesToPdf()">Convert to PDF</button>
     <div class="status" id="tool-images-status"></div>
   </div>
+
 </div>
 
 <script>
 // ---------------------------------------------------------------------
 // state
+//
+// pages is a SESSION-local cache, not server state: there is no "list
+// every page" endpoint in the API yet (pages are opened by id or found by
+// search), so this is this browser's own memory of what it has created or
+// opened, persisted to localStorage only so a reload does not lose it.
 // ---------------------------------------------------------------------
-let pages = JSON.parse(localStorage.getItem('folium.pages') || '[]');
+let pages = JSON.parse(localStorage.getItem('notetrack.pages') || '[]');
 let currentPageId = null;
 let currentBlocks = [];   // [{id, type, text, heading_level, checked, language}]
 let saveTimers = {};      // blockId -> setTimeout handle, debounced autosave
 
 function persistPageList() {
-  localStorage.setItem('folium.pages', JSON.stringify(pages));
+  localStorage.setItem('notetrack.pages', JSON.stringify(pages));
 }
 
 async function api(path, opts) {
@@ -215,35 +334,55 @@ function escapeHtml(s) {
 }
 
 // ---------------------------------------------------------------------
-// tabs
+// navigation
 // ---------------------------------------------------------------------
 function switchTab(name) {
-  document.getElementById('tab-pages').classList.toggle('active', name === 'pages');
-  document.getElementById('tab-notes').classList.toggle('active', name === 'notes');
-  document.getElementById('tab-pdf').classList.toggle('active', name === 'pdf');
-  document.getElementById('tab-tools').classList.toggle('active', name === 'tools');
-  document.getElementById('panel-notes').classList.toggle('visible', name === 'notes');
-  document.getElementById('panel-pdf').classList.toggle('visible', name === 'pdf');
-  document.getElementById('panel-tools').classList.toggle('visible', name === 'tools');
-  const showPagesArea = name === 'pages';
-  document.getElementById('empty-state').style.display = (showPagesArea && !currentPageId) ? 'flex' : 'none';
-  document.getElementById('editor').style.display = (showPagesArea && currentPageId) ? 'block' : 'none';
+  currentPageId = null;  // leaving the editor; a sidebar page click sets this again
+  for (const id of ['tab-home', 'tab-notes', 'tab-pdf', 'tab-tools']) {
+    document.getElementById(id).classList.toggle('active', id === 'tab-' + name);
+  }
+  for (const id of ['view-home', 'view-page', 'view-notes', 'view-pdf', 'view-tools']) {
+    document.getElementById(id).classList.toggle('visible', id === 'view-' + name);
+  }
+  renderPageList();
+  if (name === 'home') renderRecentPages();
 }
 
 // ---------------------------------------------------------------------
-// sidebar / pages list
+// sidebar / pages list / home dashboard
 // ---------------------------------------------------------------------
 function renderPageList() {
   const el = document.getElementById('page-list');
   el.innerHTML = '';
+  if (pages.length === 0) {
+    el.innerHTML = '<div class="empty-pages-note">No pages yet — click ＋ to start one.</div>';
+    return;
+  }
   for (const p of pages) {
     const row = document.createElement('div');
     row.className = 'page-item' + (p.id === currentPageId ? ' selected' : '');
-    row.innerHTML = '<span class="title">' + escapeHtml(p.title || 'Untitled') + '</span><span class="del" title="Delete">&times;</span>';
+    row.innerHTML = '<span class="title">📄 ' + escapeHtml(p.title || 'Untitled') + '</span><span class="del" title="Delete">&times;</span>';
     row.querySelector('.title').onclick = () => openPage(p.id);
     row.querySelector('.del').onclick = (e) => { e.stopPropagation(); deletePage(p.id); };
     el.appendChild(row);
   }
+}
+
+function renderRecentPages() {
+  const row = document.getElementById('recent-pages-row');
+  row.innerHTML = '';
+  for (const p of pages.slice(0, 7)) {
+    const card = document.createElement('div');
+    card.className = 'recent-card';
+    card.innerHTML = '<div class="icon">📄</div><div class="title">' + escapeHtml(p.title || 'Untitled') + '</div>';
+    card.onclick = () => openPage(p.id);
+    row.appendChild(card);
+  }
+  const newCard = document.createElement('div');
+  newCard.className = 'new-page-card';
+  newCard.textContent = '＋ New page';
+  newCard.onclick = createPage;
+  row.appendChild(newCard);
 }
 
 async function createPage() {
@@ -251,8 +390,6 @@ async function createPage() {
     const page = await api('/documents', { method: 'POST', body: JSON.stringify({ title: '' }) });
     pages.unshift({ id: page.id, title: page.title });
     persistPageList();
-    renderPageList();
-    switchTab('pages');
     await openPage(page.id);
     document.getElementById('page-title').focus();
   } catch (e) { alert('Could not create page: ' + e.message); }
@@ -265,25 +402,25 @@ async function deletePage(id) {
   } catch (e) { /* already gone server-side is fine for the sidebar's purposes */ }
   pages = pages.filter(p => p.id !== id);
   persistPageList();
-  if (currentPageId === id) {
-    currentPageId = null;
-    document.getElementById('editor').style.display = 'none';
-    document.getElementById('empty-state').style.display = 'flex';
-  }
+  if (currentPageId === id) { switchTab('home'); return; }
   renderPageList();
 }
 
-async function openPage(id) {
+async function openPage(pageId) {
   try {
-    const page = await api('/documents/' + id);
-    currentPageId = id;
+    const page = await api('/documents/' + pageId);
+    currentPageId = pageId;
     currentBlocks = page.blocks;
-    document.getElementById('empty-state').style.display = 'none';
-    document.getElementById('editor').style.display = 'block';
+    for (const elId of ['tab-home', 'tab-notes', 'tab-pdf', 'tab-tools']) {
+      document.getElementById(elId).classList.remove('active');
+    }
+    for (const elId of ['view-home', 'view-page', 'view-notes', 'view-pdf', 'view-tools']) {
+      document.getElementById(elId).classList.toggle('visible', elId === 'view-page');
+    }
     document.getElementById('page-title').textContent = page.title;
     renderBlocks();
     renderPageList();
-    const idx = pages.findIndex(p => p.id === id);
+    const idx = pages.findIndex(p => p.id === pageId);
     if (idx >= 0) { pages[idx].title = page.title; persistPageList(); }
   } catch (e) { alert('Could not open page: ' + e.message); }
 }
@@ -522,11 +659,6 @@ async function onBlockKeydown(e, id, div) {
   }
 }
 
-// Inserts a block into LOCAL state and the DOM immediately, synchronously
-// focusing it before this function returns — so a human (or a script)
-// typing right after Enter never races the network round trip. The real
-// creation happens in the background; pendingCreation lets a save that
-// starts before it resolves wait for the real id instead of failing.
 // Inserts ONE new block-wrap into the live DOM at the right position,
 // rather than calling renderBlocks() (which tears down and recreates
 // EVERY block). That full-rebuild approach was tried first and caused a
@@ -534,7 +666,9 @@ async function onBlockKeydown(e, id, div) {
 // rebuild raced the browser's own focus/selection settling on rapid
 // keystrokes, so text typed immediately after Enter sometimes landed in
 // no block at all. A targeted insert never touches any other block's DOM
-// node, so there is nothing for that race to happen to.
+// node, so there is nothing for that race to happen to. The real creation
+// happens in the background; pendingCreation/tempIdToRealId let a save
+// that starts before or after it resolves still find the real id.
 function insertBlockAfterOptimistic(afterId, type) {
   const index = afterId == null ? currentBlocks.length
                                  : currentBlocks.findIndex(b => b.id === afterId) + 1;
@@ -610,7 +744,7 @@ function placeCursorAtEnd(el) {
 }
 
 // ---------------------------------------------------------------------
-// notes (secondary panel)
+// notes
 // ---------------------------------------------------------------------
 const notes = [];
 function setStatus(id, text, isErr) {
@@ -662,7 +796,7 @@ async function searchNotes() {
 }
 
 // ---------------------------------------------------------------------
-// pdf (secondary panel)
+// pdf viewer
 // ---------------------------------------------------------------------
 async function uploadPdf() {
   const input = document.getElementById('pdf-file');
@@ -693,7 +827,7 @@ async function uploadPdf() {
 }
 
 // ---------------------------------------------------------------------
-// tools (secondary panel)
+// tools
 // ---------------------------------------------------------------------
 async function imagesToPdf() {
   const input = document.getElementById('tool-images-file');
@@ -729,6 +863,7 @@ async function imagesToPdf() {
 // boot
 // ---------------------------------------------------------------------
 renderPageList();
+renderRecentPages();
 </script>
 </body>
 </html>
